@@ -1,0 +1,8 @@
+matplotlib==3.10.1
+molgrid==0.5.5
+numpy==2.2.5
+rdkit==2024.9.6
+scikit_learn==1.6.1
+scipy==1.15.2
+seaborn==0.13.2
+torch==2.7.0
