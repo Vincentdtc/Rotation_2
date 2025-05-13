@@ -1,80 +1,90 @@
 # Imports
-import shutil
 import os
-import re
 import numpy as np
 from rdkit import Chem
-import gzip
-from collections import defaultdict
 from matplotlib import pyplot as plt
+import math
 
-def extract_sdf_gz_files(directory):
-    # Walk through the directory
-    for root, dirs, files in os.walk(directory):
-        # Check if the specific file exists
-        for file in files:
-            if file.endswith("_docked_vina.sdf.gz"):
-                # Construct the full path to the file
-                file_path = os.path.join(root, file)
-                
-                # Define the output file path (remove .gz from the name)
-                output_file_path = os.path.join(root, file.replace('.gz', ''))
-                
-                # Extract the file
-                with gzip.open(file_path, 'rb') as f_in:
-                    with open(output_file_path, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                
-                print(f"Extracted: {file_path} -> {output_file_path}")
+from rdkit import Chem
+import os
 
-def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path, types_file_handle, batch_num=0):
+def process_molecules(sdf_path, label, prefix, output_dir, receptor_path, types_file_handle):
     supplier = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=False)
-
-    chembl_counts = defaultdict(int)     # Tracks count per ChEMBL ID
-    seen_chembl_ids = set()              # To remember which IDs were seen
+    index_to_title = {}  # Dictionary to store index-to-title mapping
 
     for i, mol in enumerate(supplier):
         if mol is None:
             continue
 
-        # Extract ChEMBL ID from molecule title
+        # Extract molecule identifier from the title
         title = mol.GetProp("_Name") if mol.HasProp("_Name") else f"mol_{i}"
         chembl_id = title.strip().split()[0]
 
-        seen_chembl_ids.add(chembl_id)
-
-        # Only keep up to `number` molecules per ChEMBL ID
-        if chembl_counts[chembl_id] >= number:
-            continue
-
-        # Set the filename and path for the ligand based on prefix
-        if 'decoy' in prefix:
-            ligand_filename = f'{prefix}_batch{batch_num}_{chembl_id}_{chembl_counts[chembl_id]}.sdf'
-        elif 'active' in prefix:
-            ligand_filename = f'{prefix}_{chembl_id}_{chembl_counts[chembl_id]}.sdf'
-        else:
-            raise ValueError("Prefix must contain 'decoy' or 'active' to specify molecule type.")
-
+        # Set the filename and path for the ligand
+        ligand_filename = f'{prefix}_{chembl_id}_{i}.sdf'
         ligand_path = os.path.join(output_dir, ligand_filename)
 
         try:
             Chem.MolToMolFile(mol, ligand_path)
         except Exception as e:
-            print(f"Error writing molecule {i} ({chembl_id}) in batch {batch_num}: {e}")
+            print(f"Error writing molecule {i} ({chembl_id}): {e}")
             continue
 
-        # Extract a unique numeric code from the ChEMBL ID (if possible)
-        unique_code = int(re.findall(r'\d+', chembl_id)[0])
-
         # Write to the types file
-        types_file_handle.write(f'{label} {unique_code} {receptor_path} {ligand_path}\n')
+        types_file_handle.write(f'{label} {i} {receptor_path} {ligand_path}\n')
 
-        chembl_counts[chembl_id] += 1
+        # Store mapping
+        index_to_title[i] = title
 
-    # Report ChEMBL IDs with fewer than `number` entries
-    for chembl_id in seen_chembl_ids:
-        if chembl_counts[chembl_id] < number:
-            print(f"{chembl_id}: only {chembl_counts[chembl_id]} molecules found")
+    print("Molecule processing complete.")
+    return index_to_title
+
+
+def deltaG_to_pKd(deltaG_kcal, temperature=297):
+    """
+    Convert Gibbs free energy (ΔG, in kcal/mol) to pKd (–log10 of the dissociation constant).
+    
+    Parameters:
+        deltaG_kcal (float): Gibbs free energy change (negative for favorable binding), in kcal/mol.
+        temperature (float): Temperature in Kelvin (default is 298.15 K).
+
+    Returns:
+        float: pKd (dimensionless).
+    """
+    R = 1.98720425864083e-3  # kcal/mol·K taken from McNutt and Koes 2022 (as well as T value).
+    Kd = math.exp(deltaG_kcal / (R * temperature))
+    pKd = -math.log10(Kd)
+    return pKd
+
+import pandas as pd
+from FEP_functions import deltaG_to_pKd
+
+def load_fep_data(file_path):
+    """
+    Loads FEP benchmark data from a CSV file and returns a nested dictionary
+    mapping protein names to ligand names and their corresponding pKd values.
+
+    Args:
+        file_path (str): Path to the CSV file.
+
+    Returns:
+        dict: A nested dictionary of the form {protein: {ligand: pKd}}.
+    """
+    df = pd.read_csv(file_path)
+    df['protein'] = df['group_id'].apply(lambda x: x.split('/')[-1])
+
+    result = {}
+    for _, row in df.iterrows():
+        protein = row['protein']
+        ligand = row['Ligand name']
+        exp_dG = row['Exp. dG (kcal/mol)']
+        
+        if protein not in result:
+            result[protein] = {}
+        
+        result[protein][ligand] = {'exp_value': deltaG_to_pKd(exp_dG)}
+
+    return result
 
 def compute_nef_1_percent(all_affinities, all_labels):
     """

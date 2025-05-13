@@ -8,7 +8,7 @@ from scipy.stats import pearsonr
 from sklearn.metrics import roc_auc_score, roc_curve
 from matplotlib import pyplot as plt
 import seaborn as sns
-from functions import extract_sdf_gz_files, process_actives, process_decoys
+from functions import *
 from gnina_dense_model import Dense
 from openbabel import openbabel
 openbabel.OBMessageHandler().SetOutputLevel(0)  # Suppress Open Babel warnings
@@ -36,7 +36,6 @@ target_metrics = {}  # Store ROC AUC and correlation per target
 per_target_data = {}  # Store scores for visualization
 
 # === UTILITY FUNCTIONS === #
-
 def load_model(input_dims):
     """Load the Dense model only once with pretrained weights."""
     m = Dense(input_dims).to(DEVICE)
@@ -71,20 +70,28 @@ def process_target(target_folder):
 
     # Step 2: Write actives and decoys to types file
     with open(types_file, 'w') as tf:
-        process_actives(
+        process_molecules(
             sdf_path=os.path.join(target_path, 'actives_final_docked_vina.sdf'),
-            number=num_conformers, label=1, prefix='active',
-            output_dir=output_dir, receptor_path=receptor_path,
-            types_file_handle=tf
+            number=num_conformers, 
+            label=1, 
+            prefix='active',
+            output_dir=output_dir, 
+            receptor_path=receptor_path,
+            types_file_handle=tf, 
+            batch_num=0
         )
 
         # Process all decoy batches
         for batch_num, decoy_file in enumerate(sorted(glob(os.path.join(target_path, 'decoys_final_*_docked_vina.sdf')))):
             print(f"Processing decoy batch {batch_num}: {decoy_file}")
-            process_decoys(
-                sdf_path=decoy_file, number=num_conformers, label=0,
-                prefix='decoy', output_dir=output_dir,
-                receptor_path=receptor_path, types_file_handle=tf,
+            process_molecules(
+                sdf_path=decoy_file, 
+                number=num_conformers, 
+                label=0,
+                prefix='decoy', 
+                output_dir=output_dir,
+                receptor_path=receptor_path, 
+                types_file_handle=tf,
                 batch_num=batch_num
             )
 
@@ -185,28 +192,6 @@ def get_data(code, predictions, method, top_n):
         raise ValueError("Method must be 'max_aff', 'max_pose', or 'mean'.")
 
     return label, pose, affinity
-
-def compute_nef_1_percent(all_affinities, all_labels):
-    """
-    Compute the Normalized Enrichment Factor (NEF) at 1% and Enrichment Factor (EF) at 1%.
-
-    Returns:
-    - nef_1_percent (float): Normalized EF at 1%
-    - ef_1_percent (float): Raw Enrichment Factor at 1%
-    """
-    total = len(all_labels) # total number of ligands
-    num_actives = sum(all_labels) # total number of actives
-    hit_rate = num_actives / total if total > 0 else 0 # total fraction of actives
-    print(total, num_actives, hit_rate)
-
-    top_n = max(1, total // 100)  # 1% of all ligands, ensure at least one element
-    top_indices = np.argsort(all_affinities)[::-1][:top_n] # indices of top 1% by affinity
-    top_actives = sum(all_labels[i] for i in top_indices) # count of actives in top 1%
-    ef_1_percent = top_actives / top_n # raw enrichment factor at 1%
-    nef_1_percent = ef_1_percent / hit_rate if hit_rate > 0 else 0
-    print(top_n, top_indices, top_actives)
-
-    return nef_1_percent, ef_1_percent
 
 def compute_metrics(target, predictions):
     """Compute ROC AUC, Pearson correlation, and store max-score data."""
@@ -360,41 +345,4 @@ def plot_results():
 
 # Generate plots
 plot_results()
-
-def plot_nef_and_auc_scatter(target_metrics):
-
-    targets = list(target_metrics.keys())
-
-    # Extract metrics from the dictionary
-    nef_scores = [target_metrics[t]['nef_1_percent'] if 'nef_1_percent' in target_metrics[t] else np.nan for t in targets]
-    ef_scores = [target_metrics[t]['ef_1_percent'] if 'ef_1_percent' in target_metrics[t] else np.nan for t in targets]
-    auc_scores = [target_metrics[t]['roc_auc'] if target_metrics[t]['roc_auc'] is not None else np.nan for t in targets]
-
-    # Plotting
-    fig, axs = plt.subplots(3, 1, figsize=(12, 7), constrained_layout=True)
-
-    # NEF 1%
-    axs[0].scatter(targets, nef_scores, color='tab:blue', s=18)
-    axs[0].set_ylabel('NEF1%')
-    axs[0].set_title('NEF1% per Target')
-    axs[0].tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-    axs[0].grid(True)
-
-    # EF 1%
-    axs[1].scatter(targets, ef_scores, color='tab:green', s=18)
-    axs[1].set_ylabel('EF1%')
-    axs[1].set_title('EF1% per Target')
-    axs[1].tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-    axs[1].grid(True)
-
-    # ROC AUC
-    axs[2].scatter(targets, auc_scores, color='tab:orange', s=18)
-    axs[2].set_ylabel('ROC AUC')
-    axs[2].set_title('ROC AUC per Target')
-    axs[2].set_xticks(range(len(targets)))
-    axs[2].set_xticklabels(targets, rotation=90, fontsize=8)
-    axs[2].grid(True)
-
-    plt.savefig("combined_metrics_scatter.png", dpi=300)
-    print("Saved combined metrics plot to: combined_metrics_scatter.png")
 plot_nef_and_auc_scatter(target_metrics)
