@@ -1,0 +1,7 @@
+1 0 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_9_0.sdf
+1 1 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_17charg_1.sdf
+1 2 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_17neu_2.sdf
+1 3 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_4charg_3.sdf
+1 4 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_4neu_4.sdf
+1 5 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_18_5.sdf
+1 6 FEP_data/dlk/dlk_protein.pdb FEP_ligands_sdf/dlk/active_8_6.sdf
