@@ -15,7 +15,7 @@ openbabel.OBMessageHandler().SetOutputLevel(0)  # Suppress Open Babel warnings
 openbabel.obErrorLog.SetOutputLevel(0)  # Suppress Open Babel warnings
 
 # === CONFIGURATION SECTION === #
-DATA_ROOT = 'data'
+DATA_ROOT = 'DUDE_data'
 OUTPUT_ROOT = 'ligands_sdf'
 WEIGHTS_PATH = './weights/dense.pt'
 TYPES_FILENAME = 'molgrid_input.types'
@@ -208,15 +208,21 @@ def compute_metrics(target, predictions):
     has_both_classes = len(set(all_labels)) > 1
     roc_auc = roc_auc_score(all_labels, all_poses) if has_both_classes else None
     pearson_corr = pearsonr(all_poses, all_affinities)[0] if has_both_classes else None
-    nef_1_percent, ef_1_percent = compute_nef_1_percent(all_affinities, all_labels)
+    nef_1, ef_1 = compute_enrichment_factors(all_affinities, all_labels, level=1)
+    nef_5, ef_5 = compute_enrichment_factors(all_affinities, all_labels, level=5)
+    nef_10, ef_10 = compute_enrichment_factors(all_affinities, all_labels, level=10)
 
     # Store metrics and data
     target_metrics[target] = {
         'num_ligands': len(predictions),
         'roc_auc': roc_auc,
         'pearson_correlation': pearson_corr,
-        'nef_1_percent': nef_1_percent,
-        'ef_1_percent': ef_1_percent
+        'NEF 1%': nef_1,
+        'EF 1%': ef_1,
+        'NEF 5%': nef_5,
+        'EF 5%': ef_5,
+        'NEF 10%': nef_10,
+        'EF 10%': ef_10
     }
     per_target_data[target] = {
         'labels': all_labels,
@@ -243,106 +249,5 @@ for target, metrics in target_metrics.items():
             print(f"  {key}: N/A")
 
 # === VISUALIZATION FUNCTIONS === #
-
-def plot_results():
-    """Plot ROC curves and affinity distribution histograms per target."""
-    num_targets = len(per_target_data)
-    cols, rows = 3, (num_targets + 2) // 3
-    fig_roc, axs_roc = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
-    fig_dist, axs_dist = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
-    axs_roc, axs_dist = axs_roc.flatten(), axs_dist.flatten()
-
-    for idx, (target, data) in enumerate(per_target_data.items()):
-        labels, poses, affinities = data['labels'], data['pose_scores'], data['affinity_scores']
-
-        # ROC Curve
-        ax_roc = axs_roc[idx]
-        if len(set(labels)) > 1:
-            fpr, tpr, _ = roc_curve(labels, poses)
-            auc = roc_auc_score(labels, poses)
-            ax_roc.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='blue')
-        else:
-            ax_roc.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
-
-        ax_roc.plot([0, 1], [0, 1], linestyle='--', color='gray')
-        ax_roc.set_title(target)
-        ax_roc.set_xlabel('FPR')
-        ax_roc.set_ylabel('TPR')
-        ax_roc.legend()
-        ax_roc.grid(True)
-
-        # Affinity Distribution
-        ax_dist = axs_dist[idx]
-        actives = [a for a, l in zip(affinities, labels) if l == 1]
-        decoys = [a for a, l in zip(affinities, labels) if l == 0]
-        sns.histplot(actives, kde=True, color='green', label='Actives', stat="density", ax=ax_dist, bins=20)
-        sns.histplot(decoys, kde=True, color='red', label='Decoys', stat="density", ax=ax_dist, bins=20)
-        ax_dist.set_title(target)
-        ax_dist.set_xlabel('Predicted Affinity')
-        ax_dist.set_ylabel('Density')
-        ax_dist.legend()
-        ax_dist.grid(True)
-
-    # Remove unused subplots
-    for ax in axs_roc[num_targets:]: fig_roc.delaxes(ax)
-    for ax in axs_dist[num_targets:]: fig_dist.delaxes(ax)
-
-    fig_roc.tight_layout()
-    fig_dist.tight_layout()
-    fig_roc.savefig("roc_curves.png", dpi=300)
-    fig_dist.savefig("affinity_distributions.png", dpi=300)
-    print("\nSaved ROC curves to: roc_curves.png")
-    print("Saved affinity distributions to: affinity_distributions.png")
-
-    """Plot ROC curves and affinity distribution histograms per target."""
-    num_targets = len(per_target_data)
-    cols, rows = 3, (num_targets + 2) // 3
-    fig_roc, axs_roc = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
-    fig_dist, axs_dist = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
-    axs_roc, axs_dist = axs_roc.flatten(), axs_dist.flatten()
-
-    for idx, (target, data) in enumerate(per_target_data.items()):
-        labels, poses, affinities = data['labels'], data['pose_scores'], data['affinity_scores']
-
-        # ROC Curve
-        ax_roc = axs_roc[idx]
-        if len(set(labels)) > 1:
-            fpr, tpr, _ = roc_curve(labels, poses)
-            auc = roc_auc_score(labels, poses)
-            ax_roc.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='blue')
-        else:
-            ax_roc.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
-
-        ax_roc.plot([0, 1], [0, 1], linestyle='--', color='gray')
-        ax_roc.set_title(target)
-        ax_roc.set_xlabel('FPR')
-        ax_roc.set_ylabel('TPR')
-        ax_roc.legend()
-        ax_roc.grid(True)
-
-        # Affinity Distribution
-        ax_dist = axs_dist[idx]
-        actives = [a for a, l in zip(affinities, labels) if l == 1]
-        decoys = [a for a, l in zip(affinities, labels) if l == 0]
-        sns.histplot(actives, kde=True, color='green', label='Actives', stat="density", ax=ax_dist, bins=20)
-        sns.histplot(decoys, kde=True, color='red', label='Decoys', stat="density", ax=ax_dist, bins=20)
-        ax_dist.set_title(target)
-        ax_dist.set_xlabel('Predicted Affinity')
-        ax_dist.set_ylabel('Density')
-        ax_dist.legend()
-        ax_dist.grid(True)
-
-    # Remove unused subplots
-    for ax in axs_roc[num_targets:]: fig_roc.delaxes(ax)
-    for ax in axs_dist[num_targets:]: fig_dist.delaxes(ax)
-
-    fig_roc.tight_layout()
-    fig_dist.tight_layout()
-    fig_roc.savefig("roc_curves.png", dpi=300)
-    fig_dist.savefig("affinity_distributions.png", dpi=300)
-    print("\nSaved ROC curves to: roc_curves.png")
-    print("Saved affinity distributions to: affinity_distributions.png")
-
-# Generate plots
-plot_results()
-plot_nef_and_auc_scatter(target_metrics)
+plot_results(per_target_data)
+plot_ef_nef_grouped_bar(target_metrics)

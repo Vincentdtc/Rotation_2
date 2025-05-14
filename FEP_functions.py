@@ -77,10 +77,12 @@ def load_fep_data(file_path):
         protein = row['protein']
         ligand = row['Ligand name']
         exp_dG = row['Exp. dG (kcal/mol)']
+        pred_dG = row['Pred. dG (kcal/mol)']
         
         if protein not in result:
             result[protein] = {}
         
-        result[protein][ligand] = {'exp_value': deltaG_to_pKd(exp_dG)}
+        result[protein][ligand] = {'exp_value': deltaG_to_pKd(exp_dG),
+                                   'pred_value': deltaG_to_pKd(pred_dG)}
 
     return result

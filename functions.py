@@ -7,6 +7,8 @@ from rdkit import Chem
 import gzip
 from collections import defaultdict
 from matplotlib import pyplot as plt
+import seaborn as sns
+from sklearn.metrics import roc_auc_score, roc_curve
 
 def extract_sdf_gz_files(directory):
     # Walk through the directory
@@ -76,60 +78,189 @@ def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path
         if chembl_counts[chembl_id] < number:
             print(f"{chembl_id}: only {chembl_counts[chembl_id]} molecules found")
 
-def compute_nef_1_percent(all_affinities, all_labels):
+def compute_enrichment_factors(all_affinities, all_labels, level):
     """
-    Compute the Normalized Enrichment Factor (NEF) at 1% and Enrichment Factor (EF) at 1%.
+    Compute the Enrichment Factor (EF) and Normalized Enrichment Factor (NEF) at a given percentage level.
+
+    Parameters:
+    ----------
+    all_affinities : array-like
+        Predicted affinities or scores for all compounds (higher = better).
+    all_labels : array-like
+        Binary activity labels (1 = active, 0 = inactive) for each compound.
+    level : float
+        Percentage level (e.g., 1 for top 1%) at which to compute EF and NEF.
 
     Returns:
-    - nef_1_percent (float): Normalized EF at 1%
-    - ef_1_percent (float): Raw Enrichment Factor at 1%
+    -------
+    nef : float
+        Normalized Enrichment Factor at the specified level.
+    ef : float
+        Raw Enrichment Factor at the specified level.
     """
-    total = len(all_labels) # total number of ligands
-    num_actives = sum(all_labels) # total number of actives
-    hit_rate = num_actives / total if total > 0 else 0 # total fraction of actives
-    print(total, num_actives, hit_rate)
+    all_affinities = np.asarray(all_affinities)
+    all_labels = np.asarray(all_labels)
 
-    top_n = max(1, total // 100)  # 1% of all ligands, ensure at least one element
-    top_indices = np.argsort(all_affinities)[::-1][:top_n] # indices of top 1% by affinity
-    top_actives = sum(all_labels[i] for i in top_indices) # count of actives in top 1%
-    ef_1_percent = top_actives / top_n # raw enrichment factor at 1%
-    nef_1_percent = ef_1_percent / hit_rate if hit_rate > 0 else 0
-    print(top_n, top_indices, top_actives)
+    total = len(all_labels)
+    num_actives = np.sum(all_labels)
 
-    return nef_1_percent, ef_1_percent
+    if total == 0 or num_actives == 0:
+        # No compounds or no actives — EF/NEF are undefined
+        return 0.0, 0.0
 
-def plot_nef_and_auc_scatter(target_metrics):
+    # Determine number of top compounds to evaluate (top 'level'%)
+    top_n = total * level // 100
+    if top_n < 1:
+        return 0.0, 0.0
+
+    # Get indices of top 'top_n' compounds by descending affinity
+    top_indices = np.argpartition(-all_affinities, top_n - 1)[:top_n]
+
+    # Count actives in top subset
+    top_actives = np.sum(all_labels[top_indices])
+
+    # Calculate Enrichment Factor (EF)
+    expected_actives = num_actives * (level / 100)
+    ef = top_actives / expected_actives if expected_actives > 0 else 0.0
+
+    # Calculate maximum possible EF (ideal scenario)
+    max_top_actives = min(num_actives, top_n)
+    max_ef = max_top_actives / expected_actives if expected_actives > 0 else 0.0
+
+    # Normalized Enrichment Factor
+    nef = ef / max_ef if max_ef > 0 else 0.0
+
+    return nef, ef
+
+def plot_ef_nef_grouped_bar(target_metrics):
+    """
+    Plot grouped bar charts of EF and NEF values at 1%, 5%, and 10% across all targets.
+    One figure for EF and one for NEF.
+
+    Saves:
+    - grouped_ef_plot.png
+    - grouped_nef_plot.png
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    sns.set(style="whitegrid")
+
+    # Extract target names
     targets = list(target_metrics.keys())
 
-    # Extract metrics from the dictionary
-    nef_scores = [target_metrics[t]['nef_1_percent'] if 'nef_1_percent' in target_metrics[t] else np.nan for t in targets]
-    ef_scores = [target_metrics[t]['ef_1_percent'] if 'ef_1_percent' in target_metrics[t] else np.nan for t in targets]
-    auc_scores = [target_metrics[t]['roc_auc'] if target_metrics[t]['roc_auc'] is not None else np.nan for t in targets]
+    # Extract EF and NEF values for each level
+    ef_levels = ['EF 1%', 'EF 5%', 'EF 10%']
+    nef_levels = ['NEF 1%', 'NEF 5%', 'NEF 10%']
 
-    # Plotting
-    fig, axs = plt.subplots(3, 1, figsize=(12, 7), constrained_layout=True)
+    ef_data = {level: [target_metrics[t][level] for t in targets] for level in ef_levels}
+    nef_data = {level: [target_metrics[t][level] for t in targets] for level in nef_levels}
 
-    # NEF 1%
-    axs[0].scatter(targets, nef_scores, color='tab:blue', s=18)
-    axs[0].set_ylabel('NEF1%')
-    axs[0].set_title('NEF1% per Target')
-    axs[0].tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-    axs[0].grid(True)
+    x = np.arange(len(targets))  # positions for the bars
+    width = 0.25  # width of each bar
 
-    # EF 1%
-    axs[1].scatter(targets, ef_scores, color='tab:green', s=18)
-    axs[1].set_ylabel('EF1%')
-    axs[1].set_title('EF1% per Target')
-    axs[1].tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-    axs[1].grid(True)
+    # === EF Plot === #
+    fig_ef, ax_ef = plt.subplots(figsize=(max(10, len(targets) * 0.6), 6))
+    for i, level in enumerate(ef_levels):
+        ax_ef.bar(x + i * width, ef_data[level], width, label=level.upper())
 
-    # ROC AUC
-    axs[2].scatter(targets, auc_scores, color='tab:orange', s=18)
-    axs[2].set_ylabel('ROC AUC')
-    axs[2].set_title('ROC AUC per Target')
-    axs[2].set_xticks(range(len(targets)))
-    axs[2].set_xticklabels(targets, rotation=90, fontsize=8)
-    axs[2].grid(True)
+    ax_ef.set_ylabel('Enrichment Factor (EF)')
+    ax_ef.set_title('EF at 1%, 5%, and 10% by Target')
+    ax_ef.set_xticks(x + width)
+    ax_ef.set_xticklabels(targets, rotation=45, ha='right')
+    ax_ef.legend()
+    ax_ef.grid(True, axis='y', linestyle='--', alpha=0.6)
+    fig_ef.tight_layout()
+    fig_ef.savefig("grouped_ef_plot.png", dpi=300)
 
-    plt.savefig("combined_metrics_scatter.png", dpi=300)
-    print("Saved combined metrics plot to: combined_metrics_scatter.png")
+    # === NEF Plot === #
+    fig_nef, ax_nef = plt.subplots(figsize=(max(10, len(targets) * 0.6), 6))
+    for i, level in enumerate(nef_levels):
+        ax_nef.bar(x + i * width, nef_data[level], width, label=level.upper())
+
+    ax_nef.set_ylabel('Normalized Enrichment Factor (NEF)')
+    ax_nef.set_title('NEF at 1%, 5%, and 10% by Target')
+    ax_nef.set_xticks(x + width)
+    ax_nef.set_xticklabels(targets, rotation=45, ha='right')
+    ax_nef.legend()
+    ax_nef.grid(True, axis='y', linestyle='--', alpha=0.6)
+    fig_nef.tight_layout()
+    fig_nef.savefig("grouped_nef_plot.png", dpi=300)
+
+    print("\nSaved grouped EF plot to: grouped_ef_plot.png")
+    print("Saved grouped NEF plot to: grouped_nef_plot.png")
+
+def plot_results(per_target_data, roc_outfile="roc_curves.png", dist_outfile="affinity_distributions.png"):
+    """
+    Plot ROC curves and affinity distribution histograms for each target.
+
+    Parameters:
+    - per_target_data (dict): Dictionary where keys are target names and values are dictionaries with keys:
+        - 'labels': list of true binary labels
+        - 'pose_scores': list of predicted pose scores
+        - 'affinity_scores': list of predicted affinity scores
+    - roc_outfile (str): Filename to save the ROC curves plot
+    - dist_outfile (str): Filename to save the affinity distributions plot
+    """
+
+    num_targets = len(per_target_data)
+    cols = 3
+    rows = (num_targets + cols - 1) // cols
+
+    fig_roc, axs_roc = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
+    fig_dist, axs_dist = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
+
+    axs_roc = axs_roc.flatten()
+    axs_dist = axs_dist.flatten()
+
+    for idx, (target, data) in enumerate(per_target_data.items()):
+        labels = data['labels']
+        poses = data['pose_scores']
+        affinities = data['affinity_scores']
+
+        # --- ROC Curve --- #
+        ax_roc = axs_roc[idx]
+        if len(set(labels)) > 1:
+            fpr, tpr, _ = roc_curve(labels, poses)
+            auc = roc_auc_score(labels, poses)
+            ax_roc.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='blue')
+        else:
+            ax_roc.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
+
+        ax_roc.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        ax_roc.set_title(target)
+        ax_roc.set_xlabel('FPR')
+        ax_roc.set_ylabel('TPR')
+        ax_roc.legend()
+        ax_roc.grid(True)
+
+        # --- Affinity Distribution --- #
+        ax_dist = axs_dist[idx]
+        actives = [a for a, l in zip(affinities, labels) if l == 1]
+        decoys = [a for a, l in zip(affinities, labels) if l == 0]
+
+        sns.histplot(actives, kde=True, color='green', label='Actives',
+                     stat="density", ax=ax_dist, bins=20)
+        sns.histplot(decoys, kde=True, color='red', label='Decoys',
+                     stat="density", ax=ax_dist, bins=20)
+
+        ax_dist.set_title(target)
+        ax_dist.set_xlabel('Predicted Affinity')
+        ax_dist.set_ylabel('Density')
+        ax_dist.legend()
+        ax_dist.grid(True)
+
+    # Remove unused subplots
+    for ax in axs_roc[num_targets:]:
+        fig_roc.delaxes(ax)
+    for ax in axs_dist[num_targets:]:
+        fig_dist.delaxes(ax)
+
+    fig_roc.tight_layout()
+    fig_dist.tight_layout()
+
+    fig_roc.savefig(roc_outfile, dpi=300)
+    fig_dist.savefig(dist_outfile, dpi=300)
+
+    print(f"\nSaved ROC curves to: {roc_outfile}")
+    print(f"Saved affinity distributions to: {dist_outfile}")

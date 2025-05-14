@@ -64,6 +64,7 @@ def process_target(target_folder):
             receptor_path=receptor_path,
             types_file_handle=tf
         )
+        print(references)
 
     provider = molgrid.ExampleProvider(data_root='.', balanced=False, shuffle=False, cache_structs=True)
     provider.populate(types_file)
@@ -222,3 +223,113 @@ fig.legend(handles, labels, title="Target", loc="lower center", ncol=5, frameon=
 plt.tight_layout(rect=[0, 0.05, 1, 1])  # Leave space for legend
 plt.savefig("Combined_Affinity_Correlation_Plots_Centered.png", dpi=300, bbox_inches='tight')
 plt.show()
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# === GROUPED BAR PLOT: Mean Experimental, Predicted, and Model Affinity per Target with STD === #
+target_labels = []
+mean_experimental_affinities = []
+mean_predicted_pkds = []
+mean_model_affinities = []
+
+std_experimental_affinities = []
+std_predicted_pkds = []
+std_model_affinities = []
+
+# Loop through each target and calculate mean + std
+for target in sorted(FEP_data.keys()):
+    exp_values = []
+    pred_values = []
+    model_values = []
+
+    for ligand in sorted(FEP_data[target].keys()):
+        data = FEP_data[target][ligand]
+        if 'exp_value' in data and 'pred_value' in data and 'affinity_scores' in data:
+            exp_values.append(data['exp_value'])
+            pred_values.append(data['pred_value'])
+            model_values.append(data['affinity_scores'])
+
+    if exp_values and pred_values and model_values:
+        target_labels.append(target)
+        
+        # Mean
+        mean_experimental_affinities.append(np.mean(exp_values))
+        mean_predicted_pkds.append(np.mean(pred_values))
+        mean_model_affinities.append(np.mean(model_values))
+
+        # Std
+        std_experimental_affinities.append(np.std(exp_values))
+        std_predicted_pkds.append(np.std(pred_values))
+        std_model_affinities.append(np.std(model_values))
+
+# Plotting
+x = np.arange(len(target_labels))
+width = 0.3
+
+fig, ax = plt.subplots(figsize=(14, 6))
+
+ax.bar(x - width, mean_experimental_affinities, width, yerr=std_experimental_affinities,
+       label='Mean Experimental Affinity', color='lightblue', capsize=5)
+
+ax.bar(x, mean_predicted_pkds, width, yerr=std_predicted_pkds,
+       label='Mean Valsson et al. 2025', color='orange', capsize=5)
+
+ax.bar(x + width, mean_model_affinities, width, yerr=std_model_affinities,
+       label='Mean Predicted Affinity', color='green', capsize=5)
+
+# Adding labels and title
+ax.set_ylabel('Mean Affinity (pKd)')
+ax.set_title('Mean Experimental vs Predicted vs Valsson et al. 2025 Affinity per Target')
+ax.set_xticks(x)
+ax.set_xticklabels(target_labels, rotation=45, ha='right', fontsize=10)
+ax.legend()
+
+# Grid and layout
+ax.grid(axis='y', linestyle='--', alpha=0.7)
+plt.tight_layout()
+
+# Save and show
+plt.savefig("Grouped_Affinity_Barplot_Mean_STD_Per_Target.png", dpi=300)
+plt.show()
+
+# # === GROUPED BAR PLOT: Experimental, Predicted, and Model Affinity per Ligand === #
+# ligand_labels = []
+# experimental_affinities = []
+# predicted_pkds = []
+# model_affinities = []
+
+# # Loop through targets and ligands to collect the data
+# for target in sorted(FEP_data.keys()):
+#     for ligand in sorted(FEP_data[target].keys()):
+#         data = FEP_data[target][ligand]
+#         if 'exp_value' in data and 'pred_value' in data and 'affinity_scores' in data:
+#             label = f"{target}/{ligand}"
+#             ligand_labels.append(label)
+#             experimental_affinities.append(data['exp_value'])
+#             predicted_pkds.append(data['pred_value'])
+#             model_affinities.append(data['affinity_scores'])
+
+# # Plotting
+# x = np.arange(len(ligand_labels))
+# width = 0.3  # Width for the bars
+
+# fig, ax = plt.subplots(figsize=(max(14, len(ligand_labels) * 0.3), 6))
+# ax.bar(x - width, experimental_affinities, width, label='Experimental Affinity', color='lightblue')
+# ax.bar(x, predicted_pkds, width, label='Valsson et al. 2025', color='orange')
+# ax.bar(x + width, model_affinities, width, label='Predicted Affinity', color='green')
+
+# # Adding labels and title
+# ax.set_ylabel('Affinity (pKd)')
+# ax.set_title('Experimental vs Predicted vs Valsson et al. 2025 Affinity per Ligand')
+# ax.set_xticks(x)
+# ax.set_xticklabels(ligand_labels, rotation=90, ha='center', fontsize=8)
+# ax.legend()
+
+# # Adding gridlines and adjusting layout
+# ax.grid(axis='y', linestyle='--', alpha=0.7)
+# plt.tight_layout()
+
+# # Save the plot as a file and show it
+# plt.savefig("Grouped_Affinity_Barplot_Per_Ligand_Experimental_Predicted_Model.png", dpi=300)
+# plt.show()
