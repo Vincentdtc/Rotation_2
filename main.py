@@ -11,8 +11,9 @@ import seaborn as sns
 from functions import *
 from gnina_dense_model import Dense
 from openbabel import openbabel
-openbabel.OBMessageHandler().SetOutputLevel(0)  # Suppress Open Babel warnings
-openbabel.obErrorLog.SetOutputLevel(0)  # Suppress Open Babel warnings
+# Suppress Open Babel warnings
+openbabel.OBMessageHandler().SetOutputLevel(0)  
+openbabel.obErrorLog.SetOutputLevel(0)
 
 # === CONFIGURATION SECTION === #
 DATA_ROOT = 'DUDE_data'
@@ -21,7 +22,7 @@ WEIGHTS_PATH = './weights/dense.pt'
 TYPES_FILENAME = 'molgrid_input.types'
 RECEPTOR_BASE = './DUD_E_withoutfgfr1'
 BATCH_SIZE = 1
-num_conformers = 10  # Number of conformers to process
+num_conformers = 10  # Number of conformers to process per molecule
 top_n = 3  # Number of top entries to consider for mean calculation
 method = 'max_aff'  # Method to select data from predictions
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,6 +71,9 @@ def process_target(target_folder):
 
     # Step 2: Write actives and decoys to types file
     with open(types_file, 'w') as tf:
+        print(f"Processing actives and decoys for {target_folder}...")
+        # Process actives
+        print("Processing actives...")
         process_molecules(
             sdf_path=os.path.join(target_path, 'actives_final_docked_vina.sdf'),
             number=num_conformers, 
@@ -80,7 +84,8 @@ def process_target(target_folder):
             types_file_handle=tf, 
             batch_num=0
         )
-
+        # Process decoys
+        print("Processing decoys...")
         # Process all decoy batches
         for batch_num, decoy_file in enumerate(sorted(glob(os.path.join(target_path, 'decoys_final_*_docked_vina.sdf')))):
             print(f"Processing decoy batch {batch_num}: {decoy_file}")
@@ -96,7 +101,7 @@ def process_target(target_folder):
             )
 
     # Step 3: Setup MolGrid provider and tensors
-    provider = molgrid.ExampleProvider(data_root='.', balanced=False, shuffle=False, cache_structs=True)
+    provider = molgrid.ExampleProvider(data_root='.', balanced=True, shuffle=True, cache_structs=True)
     provider.populate(types_file)
 
     grid_maker, dims, tensor = prepare_gridmaker_and_tensor(provider)
@@ -198,7 +203,7 @@ def compute_metrics(target, predictions):
     all_affinities, all_labels, all_poses = [], [], []
 
     for code in sorted(predictions.keys()):
-        label, pose, affinity = get_data(code, predictions, method=method, top_n=top_n)
+        label, pose, affinity = get_data(code, predictions, method, top_n)
         
         all_affinities.append(affinity)
         all_labels.append(label)
@@ -206,15 +211,19 @@ def compute_metrics(target, predictions):
 
     # Compute metrics only if both classes are present
     has_both_classes = len(set(all_labels)) > 1
-    roc_auc = roc_auc_score(all_labels, all_poses) if has_both_classes else None
+    roc_auc = roc_auc_score(all_labels, all_affinities) if has_both_classes else None
     pearson_corr = pearsonr(all_poses, all_affinities)[0] if has_both_classes else None
     nef_1, ef_1 = compute_enrichment_factors(all_affinities, all_labels, level=1)
     nef_5, ef_5 = compute_enrichment_factors(all_affinities, all_labels, level=5)
     nef_10, ef_10 = compute_enrichment_factors(all_affinities, all_labels, level=10)
+    efs = compute_roc_enrichment_factors(all_labels, all_affinities, fpr_levels=[0.005, 0.01, 0.02, 0.05])
 
     # Store metrics and data
     target_metrics[target] = {
         'num_ligands': len(predictions),
+        'num_unique_ligands': len(all_affinities),
+        'num_actives': sum(all_labels),
+        'num_decoys': len(all_labels) - sum(all_labels),
         'roc_auc': roc_auc,
         'pearson_correlation': pearson_corr,
         'NEF 1%': nef_1,
@@ -229,6 +238,9 @@ def compute_metrics(target, predictions):
         'pose_scores': all_poses,
         'affinity_scores': all_affinities
     }
+
+    for level, factor in efs.items():
+        target_metrics[target][f'ROC EF {level*100:.1f}%'] = factor
 
 # === MAIN EXECUTION LOOP === #
 for folder in sorted(os.listdir(DATA_ROOT)):
@@ -251,3 +263,4 @@ for target, metrics in target_metrics.items():
 # === VISUALIZATION FUNCTIONS === #
 plot_results(per_target_data)
 plot_ef_nef_grouped_bar(target_metrics)
+plot_roc_ef_grouped_bar(target_metrics, save_path='roc_ef_by_target.png')

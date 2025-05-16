@@ -76,7 +76,7 @@ def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path
     # Report ChEMBL IDs with fewer than `number` entries
     for chembl_id in seen_chembl_ids:
         if chembl_counts[chembl_id] < number:
-            print(f"{chembl_id}: only {chembl_counts[chembl_id]} molecules found")
+            print(f"{chembl_id}: only {chembl_counts[chembl_id]} conformers found")
 
 def compute_enrichment_factors(all_affinities, all_labels, level):
     """
@@ -264,3 +264,76 @@ def plot_results(per_target_data, roc_outfile="roc_curves.png", dist_outfile="af
 
     print(f"\nSaved ROC curves to: {roc_outfile}")
     print(f"Saved affinity distributions to: {dist_outfile}")
+
+def compute_roc_enrichment_factors(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05]):
+    """
+    Compute ROC enrichment factors at specified false-positive rates.
+
+    Parameters
+    ----------
+    y_true : array-like of shape (n_samples,)
+        True binary labels (0 or 1).
+    y_score : array-like of shape (n_samples,)
+        Target scores, probablities, or decision function.
+    fpr_levels : list of floats, optional (default=[0.01, 0.02, 0.05])
+        FPR cutoffs at which to compute enrichment (e.g. 0.01 == 1%).
+
+    Returns
+    -------
+    enrichment : dict
+        Mapping each FPR cutoff to its enrichment factor, defined as
+            EF(x) = TPR(x) / x
+        where TPR(x) is the true-positive rate at FPR = x.
+    """
+    # Compute full ROC curve
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+
+    enrichment = {}
+    for x in fpr_levels:
+        if not (0 < x < 1):
+            raise ValueError(f"FPR level must be between 0 and 1, got {x}")
+        # Interpolate TPR at the desired FPR
+        tpr_at_x = np.interp(x, fpr, tpr)
+        enrichment[x] = tpr_at_x / x
+    return enrichment
+
+def plot_roc_ef_grouped_bar(target_metrics, fpr_levels=[0.005, 0.01, 0.02, 0.05], save_path='roc_ef_grouped_bar.png'):
+    """
+    Plot ROC Enrichment Factors (EFs) grouped by target in a single figure and save it.
+
+    Parameters:
+    - target_metrics (dict): Dictionary of target metrics.
+    - fpr_levels (list): List of FPR levels to plot (e.g., [0.005, 0.01, 0.02, 0.05]).
+    - save_path (str): Path to save the generated figure.
+    """
+    import pandas as pd
+
+    # Create dataframe for plotting
+    data = []
+    for target, metrics in target_metrics.items():
+        for fpr in fpr_levels:
+            ef_key = f'ROC EF {fpr*100:.1f}%'
+            ef_value = metrics.get(ef_key)
+            if ef_value is not None:
+                data.append({'Target': target, 'FPR Level': f'{fpr*100:.1f}%', 'EF': ef_value})
+
+    df = pd.DataFrame(data)
+
+    # Plot using seaborn
+    plt.figure(figsize=(14, 6))
+    sns.barplot(data=df, x='Target', y='EF', hue='FPR Level', palette='viridis')
+
+    plt.xticks(rotation=45, ha='right')
+    plt.title('ROC Enrichment Factors Grouped by Target')
+    plt.xlabel('Target')
+    plt.ylabel('Enrichment Factor (EF)')
+    plt.legend(title='FPR Level')
+    plt.tight_layout()
+
+    # Save figure
+    plt.savefig(save_path, dpi=300)
+    print(f"Figure saved to {save_path}")
+
+    # Show figure
+    plt.show()
+

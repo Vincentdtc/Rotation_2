@@ -1,11 +1,9 @@
 # Imports
 import os
-import numpy as np
 from rdkit import Chem
-from matplotlib import pyplot as plt
 import math
-from rdkit import Chem
 import os
+import pandas as pd
 
 def process_molecules(sdf_path, label, prefix, output_dir, receptor_path, types_file_handle):
     supplier = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=False)
@@ -38,7 +36,6 @@ def process_molecules(sdf_path, label, prefix, output_dir, receptor_path, types_
     print("Molecule processing complete.")
     return index_to_title
 
-
 def deltaG_to_pKd(deltaG_kcal, temperature=297):
     """
     Convert Gibbs free energy (ΔG, in kcal/mol) to pKd (–log10 of the dissociation constant).
@@ -54,9 +51,6 @@ def deltaG_to_pKd(deltaG_kcal, temperature=297):
     Kd = math.exp(deltaG_kcal / (R * temperature))
     pKd = -math.log10(Kd)
     return pKd
-
-import pandas as pd
-from FEP_functions import deltaG_to_pKd
 
 def load_fep_data(file_path):
     """
