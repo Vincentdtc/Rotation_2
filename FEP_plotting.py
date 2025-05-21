@@ -2,6 +2,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
+import seaborn as sns
+import pandas as pd
 
 # === RESULTS FOLDER === #
 RESULTS_DIR = "results"
@@ -54,31 +56,76 @@ def save_per_target_correlation(FEP_data, output_dir='target_combined_plots'):
                 pred.append(data['affinity_scores'])
                 pose.append(data['pose_scores'])
 
-        if len(exp) < 2:
+        if len(exp) < 10:
             continue
 
         exp, pred, pose = map(np.array, (exp, pred, pose))
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
+        # Create a figure with 4 subplots (2 columns, 2 rows)
+        fig, axs = plt.subplots(2, 2, figsize=(14, 10), sharey=True)
+
+        # --- Subplot 1: Predicted vs Experimental Affinity
+        ax1 = axs[0, 0]
         ax1.scatter(exp, pred, color='dodgerblue', edgecolor='k', alpha=0.7, s=50)
+
+        # Fit without forcing through (0, 0)
         m1, b1 = np.polyfit(exp, pred, 1)
         r1, _ = pearsonr(exp, pred)
-        ax1.plot(exp, m1 * exp + b1, 'r--', label='Fit')
+
+        # Plot the fit with dashed line and increased line width
+        ax1.plot(exp, m1 * exp + b1, 'r--', label='Fit', linewidth=2)
         ax1.set(xlabel="Experimental Affinity", ylabel="Predicted Affinity",
                 title="Predicted vs Experimental Affinity")
         ax1.text(0.05, 0.95, f'Pearson r = {r1:.3f}', transform=ax1.transAxes,
                  fontsize=12, va='top', bbox=dict(facecolor='white', alpha=0.8))
         ax1.grid(True)
 
+        # --- Subplot 2: Pose Score vs Predicted Affinity
+        ax2 = axs[0, 1]
         ax2.scatter(pose, pred, color='mediumseagreen', edgecolor='k', alpha=0.7, s=50)
+
+        # Fit without forcing through (0, 0)
         m2, b2 = np.polyfit(pose, pred, 1)
         r2, _ = pearsonr(pose, pred)
-        ax2.plot(pose, m2 * pose + b2, 'r--')
+
+        # Plot the fit with dashed line and increased line width
+        ax2.plot(pose, m2 * pose + b2, 'r--', label='Fit', linewidth=2)
         ax2.set(xlabel="Pose Score", title="Pose Score vs Predicted Affinity")
         ax2.text(0.05, 0.95, f'Pearson r = {r2:.3f}', transform=ax2.transAxes,
                  fontsize=12, va='top', bbox=dict(facecolor='white', alpha=0.8))
         ax2.grid(True)
 
+        # --- Subplot 3: Pose Score vs Experimental Affinity (Correlation)
+        ax3 = axs[1, 0]
+        ax3.scatter(pose, exp, color='orange', edgecolor='k', alpha=0.7, s=50)
+
+        # Fit without forcing through (0, 0)
+        m3, b3 = np.polyfit(pose, exp, 1)
+        r3, _ = pearsonr(pose, exp)
+
+        # Plot the fit with dashed line and increased line width
+        ax3.plot(pose, m3 * pose + b3, 'r--', label='Fit', linewidth=2)
+        ax3.set(xlabel="Pose Score", ylabel="Experimental Affinity", title="Pose Score vs Experimental Affinity")
+        ax3.text(0.05, 0.95, f'Pearson r = {r3:.3f}', transform=ax3.transAxes,
+                 fontsize=12, va='top', bbox=dict(facecolor='white', alpha=0.8))
+        ax3.grid(True)
+
+        # --- Subplot 4: Predicted vs Experimental Affinity (Correlation)
+        ax4 = axs[1, 1]
+        ax4.scatter(pred, exp, color='purple', edgecolor='k', alpha=0.7, s=50)
+
+        # Fit without forcing through (0, 0)
+        m4, b4 = np.polyfit(pred, exp, 1)
+        r4, _ = pearsonr(pred, exp)
+
+        # Plot the fit with dashed line and increased line width
+        ax4.plot(pred, m4 * pred + b4, 'r--', label='Fit', linewidth=2)
+        ax4.set(xlabel="Predicted Affinity", ylabel="Experimental Affinity", title="Predicted vs Experimental Affinity")
+        ax4.text(0.05, 0.95, f'Pearson r = {r4:.3f}', transform=ax4.transAxes,
+                 fontsize=12, va='top', bbox=dict(facecolor='white', alpha=0.8))
+        ax4.grid(True)
+
+        # Adjust layout and save the figure
         fig.suptitle(f"Target: {target}", fontsize=16)
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.savefig(os.path.join(full_output_dir, f"{target}.png"), dpi=300)
@@ -201,4 +248,201 @@ def save_legend(handles, labels, filename="target_legend.png", ncol=2):
     plt.axis('off')
     plt.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_violin_affinity_differences(FEP_data, output_file="violin_plots_per_target.png"):
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    output_path = os.path.join(RESULTS_DIR, output_file)
+
+    # Prepare data for the violin plot
+    data = []
+
+    for target, ligands in FEP_data.items():
+        for ligand, values in ligands.items():
+            if 'exp_value' in values and 'affinity_scores' in values and 'pred_value' in values:
+                exp_value = values['exp_value']
+                predicted_affinity = values['affinity_scores']
+                fep_benchmark_affinity = values['pred_value']
+                
+                if fep_benchmark_affinity is not None:
+                    # Difference between experimental and predicted affinity
+                    diff_exp_pred = predicted_affinity - exp_value
+                    # Difference between FEP benchmark and experimental affinity
+                    diff_fep_exp =  fep_benchmark_affinity- exp_value
+                    
+                    # Append the results to the data list
+                    data.append({'Target': target, 'Difference': diff_exp_pred, 'Type': 'Predicted - Experimental'})
+                    data.append({'Target': target, 'Difference': diff_fep_exp, 'Type': 'Valsson et al. 2025 - Experimental'})
+
+    # Create a DataFrame for easier plotting and analysis
+    df = pd.DataFrame(data)
+
+    # Create the violin plot
+    plt.figure(figsize=(16, 8))  # Increased figure size for better resolution
+    ax = sns.violinplot(x='Target', y='Difference', hue='Type', data=df, split=True, inner='quartile')
+
+    # Add a horizontal line at y = 0 for reference
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+    plt.title('Affinity Differences per Target (Experimental vs Predicted, and Experimental vs Valsson et al. 2025)')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    # Save the plot with increased resolution (dpi)
+    plt.savefig(output_path, dpi=600)  # Increased dpi for better resolution
+    plt.close()
+
+import os
+import seaborn as sns
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def plot_boxplot_with_jitter(FEP_data, output_file="boxplot_with_jitter.png"):
+    """
+    Generate a boxplot with overlaid jittered points showing affinity differences
+    between experimental values, predicted scores, and FEP benchmark values per target.
+
+    Parameters:
+        FEP_data (dict): Dictionary containing target-specific ligand data.
+        output_file (str): Filename for saving the output plot.
+    """
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    output_path = os.path.join(RESULTS_DIR, output_file)
+
+    data = []
+    for target, ligands in FEP_data.items():
+        for values in ligands.values():
+            if all(k in values for k in ['exp_value', 'affinity_scores', 'pred_value']):
+                exp = values['exp_value']
+                pred = values['affinity_scores']
+                fep = values['pred_value']
+                
+                if fep is not None:
+                    data.append({'Target': target, 'Difference': pred - exp, 'Type': 'Predicted - Experimental'})
+                    data.append({'Target': target, 'Difference': fep - exp, 'Type': 'Valsson et al. 2025 - Experimental'})
+
+    df = pd.DataFrame(data)
+
+    plt.figure(figsize=(16, 8))
+
+    # Draw boxplot
+    ax = sns.boxplot(x='Target', y='Difference', hue='Type', data=df,
+                     showfliers=False, palette="Set2")
+
+    # Overlay jittered points
+    sns.stripplot(x='Target', y='Difference', hue='Type', data=df,
+                  dodge=True, marker='o', alpha=0.6, palette="dark:black", size=6)
+
+    # Remove duplicate legends
+    handles, labels = ax.get_legend_handles_labels()
+    n = len(set(labels))  # ensure uniqueness
+    ax.legend(handles[:n], labels[:n], title='Comparison')
+
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+    plt.title('Affinity Differences per Target (Experimental vs Predicted & Valsson et al. 2025)')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=600)
+    plt.close()
+
+
+def plot_boxplot_with_jitter_and_violin(FEP_data, output_file="boxplot_with_jitter_and_violin.png"):
+    import seaborn as sns
+    import pandas as pd
+    import numpy as np
+    import os
+    import matplotlib.pyplot as plt
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    output_path = os.path.join(RESULTS_DIR, output_file)
+
+    # Prepare data for the plot
+    data = []
+
+    for target, ligands in FEP_data.items():
+        for ligand, values in ligands.items():
+            if 'exp_value' in values and 'affinity_scores' in values and 'pred_value' in values:
+                exp_value = values['exp_value']
+                predicted_affinity = values['affinity_scores']
+                fep_benchmark_affinity = values['pred_value']
+                
+                if fep_benchmark_affinity is not None:
+                    # Difference between experimental and predicted affinity
+                    diff_exp_pred = predicted_affinity - exp_value
+                    # Difference between FEP benchmark and experimental affinity
+                    diff_fep_exp = fep_benchmark_affinity - exp_value
+                    
+                    # Append the results to the data list
+                    data.append({'Target': target, 'Difference': diff_exp_pred, 'Type': 'Predicted - Experimental'})
+                    data.append({'Target': target, 'Difference': diff_fep_exp, 'Type': 'Valsson et al. 2025 - Experimental'})
+
+    # Create a DataFrame for easier plotting and analysis
+    df = pd.DataFrame(data)
+
+    # Create the plot
+    plt.figure(figsize=(16, 8))
+
+    # First, add the violin plot
+    ax = sns.violinplot(x='Target', y='Difference', hue='Type', data=df, split=True, inner='quart', palette="Set2")
+
+    # Overlay the boxplot with jittered points
+    sns.boxplot(x='Target', y='Difference', hue='Type', data=df, showfliers=False, palette="Set2", width=0.4, fliersize=0)
+
+    # Overlay jittered points
+    sns.stripplot(x='Target', y='Difference', hue='Type', data=df, dodge=True, marker='o', alpha=0.6, palette='dark:black', size=6)
+
+    # Add a horizontal line at y = 0 for reference
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+
+    # Set titles and labels
+    plt.title('Affinity Differences per Target (Experimental vs Predicted, and Experimental vs Valsson et al. 2025)')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+
+    # Save the plot with increased resolution (dpi)
+    plt.savefig(output_path, dpi=600)
+    plt.close()
+
+def plot_kde_affinity_differences(FEP_data, output_file="kde_plots_per_target.png"):
+    import seaborn as sns
+    import pandas as pd
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    output_path = os.path.join(RESULTS_DIR, output_file)
+
+    # Prepare data for the KDE plot
+    data = []
+
+    for target, ligands in FEP_data.items():
+        for ligand, values in ligands.items():
+            if 'exp_value' in values and 'affinity_scores' in values and 'pred_value' in values:
+                exp_value = values['exp_value']
+                predicted_affinity = values['affinity_scores']
+                fep_benchmark_affinity = values['pred_value']
+                
+                if fep_benchmark_affinity is not None:
+                    # Difference between experimental and predicted affinity
+                    diff_exp_pred = predicted_affinity - exp_value
+                    # Difference between FEP benchmark and experimental affinity
+                    diff_fep_exp =  fep_benchmark_affinity - exp_value
+                    
+                    # Append the results to the data list
+                    data.append({'Target': target, 'Difference': diff_exp_pred, 'Type': 'Predicted - Experimental'})
+                    data.append({'Target': target, 'Difference': diff_fep_exp, 'Type': 'Valsson et al. 2025 - Experimental'})
+
+    # Create a DataFrame for easier plotting and analysis
+    df = pd.DataFrame(data)
+
+    # Create the KDE plot
+    plt.figure(figsize=(16, 8))
+    sns.kdeplot(data=df, x='Difference', hue='Type', common_norm=False, fill=True, alpha=0.3)
+
+    # Add a vertical line at y = 0 for reference
+    plt.axvline(0, color='gray', linestyle='--', linewidth=1)
+    plt.title('Kernel Density Estimate of Affinity Differences')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+
+    # Save the plot with increased resolution (dpi)
+    plt.savefig(output_path, dpi=600)
     plt.close()

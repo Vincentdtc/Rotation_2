@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from FEP_functions import *
 from gnina_dense_model import Dense
-from plotting import *
+from FEP_plotting import *
 
 # === CONFIGURATION SECTION === #
 DATA_ROOT = 'FEP_data'
@@ -140,10 +140,24 @@ print(f"\nOverall RMSD: {np.mean(overall_RMSD):.4f} ± {np.std(overall_RMSD):.4f
 print("==== End of Summary ====")
 
 # === PLOTTING SECTION === #
+print('\n==== Generating Plots ====')
+print('Plotting RMSD per target...')
 plot_rmsd_per_target(target_metrics)
+print('Plotting RMSD per ligand...')
 save_per_target_correlation(FEP_data)
+print('Plotting RMSD per ligand with error bars...')
 plot_grouped_affinity(FEP_data)
 
 handles, labels = plot_combined_correlation(FEP_data)
 save_legend(handles, labels)
 plt.show()
+
+print('Plotting RMSD per ligand with error bars and KDE...')
+plot_violin_affinity_differences(FEP_data)
+print('Plotting boxplot with jitter and violin...')
+plot_boxplot_with_jitter_and_violin(FEP_data)
+print('Plotting KDE of affinity differences...')
+plot_kde_affinity_differences(FEP_data)
+print('Plotting scatter plot with marginal histograms...')
+print('Plotting boxplot with jitter...')
+plot_boxplot_with_jitter(FEP_data)
