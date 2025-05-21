@@ -1,3 +1,4 @@
+# === IMPORTS === #
 import os
 import math
 import torch
@@ -5,103 +6,125 @@ import molgrid
 import numpy as np
 from glob import glob
 from scipy.stats import pearsonr
-from sklearn.metrics import roc_auc_score, roc_curve
-from matplotlib import pyplot as plt
-import seaborn as sns
+from sklearn.metrics import roc_auc_score
+from openbabel import openbabel
+
+# Local modules
 from functions import *
 from gnina_dense_model import Dense
-from openbabel import openbabel
+from fix_nitrogens import *
+from convert_ligs import *
+
 # Suppress Open Babel warnings
 openbabel.OBMessageHandler().SetOutputLevel(0)  
 openbabel.obErrorLog.SetOutputLevel(0)
 
-# === CONFIGURATION SECTION === #
+# === CONFIGURATION === #
 DATA_ROOT = 'DUDE_data'
+RECEPTOR_BASE = './DUD_E_withoutfgfr1'
 OUTPUT_ROOT = 'ligands_sdf'
+OUTPUT_ROOT2 = 'ligs_sdf'
 WEIGHTS_PATH = './weights/dense.pt'
 TYPES_FILENAME = 'molgrid_input.types'
-RECEPTOR_BASE = './DUD_E_withoutfgfr1'
+
 BATCH_SIZE = 1
-num_conformers = 10  # Number of conformers to process per molecule
-top_n = 3  # Number of top entries to consider for mean calculation
-method = 'max_aff'  # Method to select data from predictions
+NUM_CONFORMERS = 10
+TOP_N = 3
+METHOD = 'max_aff'
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Ensure deterministic results from cuDNN (may reduce speed slightly, but ensures reproducibility)
+# Set deterministic mode for reproducibility
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-# === GLOBAL VARIABLES === #
-model = None  # Loaded once and reused
-target_metrics = {}  # Store ROC AUC and correlation per target
-per_target_data = {}  # Store scores for visualization
+# === GLOBALS === #
+model = None
+target_metrics = {}     # For storing per-target ROC AUC and correlations
+per_target_data = {}    # For storing per-target predictions
 
-# === UTILITY FUNCTIONS === #
+# === MODEL LOADING === #
 def load_model(input_dims):
-    """Load the Dense model only once with pretrained weights."""
-    m = Dense(input_dims).to(DEVICE)
-    m.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
-    m.eval()
-    return m
+    """Load the Dense model with pretrained weights."""
+    model = Dense(input_dims).to(DEVICE)
+    model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
+    model.eval()
+    return model
 
+# === GRID SETUP === #
 def prepare_gridmaker_and_tensor(provider):
-    """Set up grid maker and allocate input tensor based on example provider type info."""
+    """Create grid maker and allocate input tensor."""
     grid_maker = molgrid.GridMaker(resolution=0.5, dimension=23.5)
     dims = grid_maker.grid_dimensions(provider.num_types())
     tensor_shape = (BATCH_SIZE,) + tuple(dims)
     tensor = torch.empty(tensor_shape, dtype=torch.float32, device=DEVICE)
     return grid_maker, dims, tensor
 
+# === TARGET PROCESSING === #
 def process_target(target_folder):
-    """Process a single target directory and perform inference."""
+    """Process one target for active/decoy inference and feature generation."""
     target_path = os.path.join(DATA_ROOT, target_folder)
-    receptor_path = os.path.join(RECEPTOR_BASE, target_folder, 'receptor.pdb')
+    receptor_file = os.path.join(RECEPTOR_BASE, target_folder, 'receptor.pdb')
     types_file = os.path.join(target_path, TYPES_FILENAME)
     output_dir = os.path.join(OUTPUT_ROOT, target_folder)
+    output_dir2 = os.path.join(OUTPUT_ROOT2, target_folder)
 
-    # Skip if receptor file doesn't exist
-    if not os.path.isfile(receptor_path):
-        print(f"Missing receptor for {target_folder}, skipping...")
+    # Ensure receptor exists
+    if not os.path.isfile(receptor_file):
+        print(f"[SKIP] Receptor not found for {target_folder}")
         return
 
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir2, exist_ok=True)
 
-    # Step 1: Extract SDF files (if gzipped)
+    # Step 1: Unzip any compressed SDFs
     extract_sdf_gz_files(target_path)
 
-    # Step 2: Write actives and decoys to types file
+    # Step 2: Process actives and decoys into .types format
     with open(types_file, 'w') as tf:
-        print(f"Processing actives and decoys for {target_folder}...")
-        # Process actives
-        print("Processing actives...")
+        print(f"[INFO] Processing target: {target_folder}")
+
+        # === Actives === #
+        print(" - Processing actives...")
+        actives_sdf = os.path.join(target_path, 'actives_final_docked_vina.sdf')
+        processed_actives_sdf = os.path.join(output_dir2, f"{target_folder}_processed.sdf")
+        process_sdf(actives_sdf, processed_actives_sdf)
+        
         process_molecules(
-            sdf_path=os.path.join(target_path, 'actives_final_docked_vina.sdf'),
-            number=num_conformers, 
-            label=1, 
+            sdf_path=processed_actives_sdf,
+            number=NUM_CONFORMERS,
+            label=1,
             prefix='active',
-            output_dir=output_dir, 
-            receptor_path=receptor_path,
-            types_file_handle=tf, 
+            output_dir=output_dir,
+            receptor_path=receptor_file,
+            types_file_handle=tf,
             batch_num=0
         )
-        # Process decoys
-        print("Processing decoys...")
-        # Process all decoy batches
-        for batch_num, decoy_file in enumerate(sorted(glob(os.path.join(target_path, 'decoys_final_*_docked_vina.sdf')))):
-            print(f"Processing decoy batch {batch_num}: {decoy_file}")
+
+        # === Decoys === #
+        print(" - Processing decoys...")
+        decoy_files = sorted(glob(os.path.join(target_path, 'decoys_final_*_docked_vina.sdf')))
+
+        for batch_num, decoy_file in enumerate(decoy_files):
+            print(f"   - Batch {batch_num}: {decoy_file}")
+            decoy_batch_dir = os.path.join(output_dir2, f"decoy_batch_{batch_num}")
+            os.makedirs(decoy_batch_dir, exist_ok=True)
+
+            processed_decoy_sdf = os.path.join(decoy_batch_dir, f"{target_folder}_decoy_batch_{batch_num}_processed.sdf")
+            process_sdf(decoy_file, processed_decoy_sdf)
             process_molecules(
-                sdf_path=decoy_file, 
-                number=num_conformers, 
+                sdf_path=processed_decoy_sdf,
+                number=NUM_CONFORMERS,
                 label=0,
-                prefix='decoy', 
+                prefix='decoy',
                 output_dir=output_dir,
-                receptor_path=receptor_path, 
+                receptor_path=receptor_file,
                 types_file_handle=tf,
                 batch_num=batch_num
             )
 
     # Step 3: Setup MolGrid provider and tensors
-    provider = molgrid.ExampleProvider(data_root='.', balanced=True, shuffle=True, cache_structs=True)
+    provider = molgrid.ExampleProvider(data_root='.', balanced=False, shuffle=True, cache_structs=True)
     provider.populate(types_file)
 
     grid_maker, dims, tensor = prepare_gridmaker_and_tensor(provider)
@@ -203,7 +226,7 @@ def compute_metrics(target, predictions):
     all_affinities, all_labels, all_poses = [], [], []
 
     for code in sorted(predictions.keys()):
-        label, pose, affinity = get_data(code, predictions, method, top_n)
+        label, pose, affinity = get_data(code, predictions, METHOD, TOP_N)
         
         all_affinities.append(affinity)
         all_labels.append(label)
@@ -211,7 +234,8 @@ def compute_metrics(target, predictions):
 
     # Compute metrics only if both classes are present
     has_both_classes = len(set(all_labels)) > 1
-    roc_auc = roc_auc_score(all_labels, all_affinities) if has_both_classes else None
+    roc_auc_pose = roc_auc_score(all_labels, all_poses) if has_both_classes else None
+    roc_auc_aff = roc_auc_score(all_labels, all_affinities) if has_both_classes else None
     pearson_corr = pearsonr(all_poses, all_affinities)[0] if has_both_classes else None
     nef_1, ef_1 = compute_enrichment_factors(all_affinities, all_labels, level=1)
     nef_5, ef_5 = compute_enrichment_factors(all_affinities, all_labels, level=5)
@@ -220,12 +244,13 @@ def compute_metrics(target, predictions):
 
     # Store metrics and data
     target_metrics[target] = {
-        'num_ligands': len(predictions),
-        'num_unique_ligands': len(all_affinities),
-        'num_actives': sum(all_labels),
-        'num_decoys': len(all_labels) - sum(all_labels),
-        'roc_auc': roc_auc,
-        'pearson_correlation': pearson_corr,
+        'num_ligands': int(len(predictions)),
+        'num_unique_ligands': int(len(all_affinities)),
+        'num_actives': int(sum(all_labels)),
+        'num_decoys': int(len(all_labels) - sum(all_labels)),
+        'roc_auc(pose)': roc_auc_pose,
+        'roc_auc(affinity)': roc_auc_aff,
+        'pearson_correlation': round(pearson_corr,2),
         'NEF 1%': nef_1,
         'EF 1%': ef_1,
         'NEF 5%': nef_5,
@@ -233,6 +258,7 @@ def compute_metrics(target, predictions):
         'NEF 10%': nef_10,
         'EF 10%': ef_10
     }
+
     per_target_data[target] = {
         'labels': all_labels,
         'pose_scores': all_poses,

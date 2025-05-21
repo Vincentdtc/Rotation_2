@@ -9,6 +9,11 @@ from collections import defaultdict
 from matplotlib import pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_auc_score, roc_curve
+import pandas as pd
+
+def ensure_output_dir(base_dir='results_DUD_E'):
+    os.makedirs(base_dir, exist_ok=True)
+    return base_dir
 
 def extract_sdf_gz_files(directory):
     # Walk through the directory
@@ -132,19 +137,18 @@ def compute_enrichment_factors(all_affinities, all_labels, level):
 
     return nef, ef
 
-def plot_ef_nef_grouped_bar(target_metrics):
+def plot_ef_nef_grouped_bar(target_metrics, output_dir='results_DUD_E'):
     """
     Plot grouped bar charts of EF and NEF values at 1%, 5%, and 10% across all targets.
     One figure for EF and one for NEF.
 
     Saves:
-    - grouped_ef_plot.png
-    - grouped_nef_plot.png
+    - grouped_ef_plot.png in the output_dir
+    - grouped_nef_plot.png in the output_dir
     """
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-
-    sns.set(style="whitegrid")
+    # Ensure the output directory exists
+    output_dir = ensure_output_dir(output_dir)
+    sns.set_theme(style="whitegrid")
 
     # Extract target names
     targets = list(target_metrics.keys())
@@ -171,7 +175,7 @@ def plot_ef_nef_grouped_bar(target_metrics):
     ax_ef.legend()
     ax_ef.grid(True, axis='y', linestyle='--', alpha=0.6)
     fig_ef.tight_layout()
-    fig_ef.savefig("grouped_ef_plot.png", dpi=300)
+    fig_ef.savefig(os.path.join(output_dir, "grouped_ef_plot.png"), dpi=300)
 
     # === NEF Plot === #
     fig_nef, ax_nef = plt.subplots(figsize=(max(10, len(targets) * 0.6), 6))
@@ -185,32 +189,38 @@ def plot_ef_nef_grouped_bar(target_metrics):
     ax_nef.legend()
     ax_nef.grid(True, axis='y', linestyle='--', alpha=0.6)
     fig_nef.tight_layout()
-    fig_nef.savefig("grouped_nef_plot.png", dpi=300)
+    fig_nef.savefig(os.path.join(output_dir, "grouped_nef_plot.png"), dpi=300)
 
-    print("\nSaved grouped EF plot to: grouped_ef_plot.png")
-    print("Saved grouped NEF plot to: grouped_nef_plot.png")
+    print(f"\nSaved grouped EF plot to: {os.path.join(output_dir, 'grouped_ef_plot.png')}")
+    print(f"Saved grouped NEF plot to: {os.path.join(output_dir, 'grouped_nef_plot.png')}")
 
-def plot_results(per_target_data, roc_outfile="roc_curves.png", dist_outfile="affinity_distributions.png"):
+def plot_results(per_target_data, 
+                 output_dir='results_DUD_E',
+                 roc_outfile="roc_curves_pose.png", 
+                 dist_outfile="affinity_distributions.png", 
+                 affinity_roc_outfile="roc_curves_affinity.png"):
     """
-    Plot ROC curves and affinity distribution histograms for each target.
-
-    Parameters:
-    - per_target_data (dict): Dictionary where keys are target names and values are dictionaries with keys:
-        - 'labels': list of true binary labels
-        - 'pose_scores': list of predicted pose scores
-        - 'affinity_scores': list of predicted affinity scores
-    - roc_outfile (str): Filename to save the ROC curves plot
-    - dist_outfile (str): Filename to save the affinity distributions plot
+    Plot ROC curves (pose and affinity), and affinity distribution histograms for each target.
+    
+    Saves:
+    - roc_curves_pose.png in the output_dir
+    - affinity_distributions.png in the output_dir
+    - roc_curves_affinity.png in the output_dir
     """
+
+    # Ensure the output directory exists
+    output_dir = ensure_output_dir(output_dir)
 
     num_targets = len(per_target_data)
     cols = 3
     rows = (num_targets + cols - 1) // cols
 
-    fig_roc, axs_roc = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
+    fig_roc_pose, axs_roc_pose = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
+    fig_roc_affinity, axs_roc_affinity = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
     fig_dist, axs_dist = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
 
-    axs_roc = axs_roc.flatten()
+    axs_roc_pose = axs_roc_pose.flatten()
+    axs_roc_affinity = axs_roc_affinity.flatten()
     axs_dist = axs_dist.flatten()
 
     for idx, (target, data) in enumerate(per_target_data.items()):
@@ -218,21 +228,35 @@ def plot_results(per_target_data, roc_outfile="roc_curves.png", dist_outfile="af
         poses = data['pose_scores']
         affinities = data['affinity_scores']
 
-        # --- ROC Curve --- #
-        ax_roc = axs_roc[idx]
+        # --- ROC Curve using pose_scores --- #
+        ax_pose = axs_roc_pose[idx]
         if len(set(labels)) > 1:
             fpr, tpr, _ = roc_curve(labels, poses)
             auc = roc_auc_score(labels, poses)
-            ax_roc.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='blue')
+            ax_pose.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='blue')
         else:
-            ax_roc.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
+            ax_pose.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
+        ax_pose.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        ax_pose.set_title(f"{target} (Pose)")
+        ax_pose.set_xlabel('FPR')
+        ax_pose.set_ylabel('TPR')
+        ax_pose.legend()
+        ax_pose.grid(True)
 
-        ax_roc.plot([0, 1], [0, 1], linestyle='--', color='gray')
-        ax_roc.set_title(target)
-        ax_roc.set_xlabel('FPR')
-        ax_roc.set_ylabel('TPR')
-        ax_roc.legend()
-        ax_roc.grid(True)
+        # --- ROC Curve using affinity_scores --- #
+        ax_aff = axs_roc_affinity[idx]
+        if len(set(labels)) > 1:
+            fpr, tpr, _ = roc_curve(labels, affinities)
+            auc = roc_auc_score(labels, affinities)
+            ax_aff.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='purple')
+        else:
+            ax_aff.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
+        ax_aff.plot([0, 1], [0, 1], linestyle='--', color='gray')
+        ax_aff.set_title(f"{target} (Affinity)")
+        ax_aff.set_xlabel('FPR')
+        ax_aff.set_ylabel('TPR')
+        ax_aff.legend()
+        ax_aff.grid(True)
 
         # --- Affinity Distribution --- #
         ax_dist = axs_dist[idx]
@@ -251,19 +275,25 @@ def plot_results(per_target_data, roc_outfile="roc_curves.png", dist_outfile="af
         ax_dist.grid(True)
 
     # Remove unused subplots
-    for ax in axs_roc[num_targets:]:
-        fig_roc.delaxes(ax)
+    for ax in axs_roc_pose[num_targets:]:
+        fig_roc_pose.delaxes(ax)
+    for ax in axs_roc_affinity[num_targets:]:
+        fig_roc_affinity.delaxes(ax)
     for ax in axs_dist[num_targets:]:
         fig_dist.delaxes(ax)
 
-    fig_roc.tight_layout()
+    fig_roc_pose.tight_layout()
+    fig_roc_affinity.tight_layout()
     fig_dist.tight_layout()
 
-    fig_roc.savefig(roc_outfile, dpi=300)
-    fig_dist.savefig(dist_outfile, dpi=300)
+    # Save the figures in the specified output directory
+    fig_roc_pose.savefig(os.path.join(output_dir, roc_outfile), dpi=300)
+    fig_roc_affinity.savefig(os.path.join(output_dir, affinity_roc_outfile), dpi=300)
+    fig_dist.savefig(os.path.join(output_dir, dist_outfile), dpi=300)
 
-    print(f"\nSaved ROC curves to: {roc_outfile}")
-    print(f"Saved affinity distributions to: {dist_outfile}")
+    print(f"\nSaved pose-based ROC curves to: {os.path.join(output_dir, roc_outfile)}")
+    print(f"Saved affinity-based ROC curves to: {os.path.join(output_dir, affinity_roc_outfile)}")
+    print(f"Saved affinity distributions to: {os.path.join(output_dir, dist_outfile)}")
 
 def compute_roc_enrichment_factors(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05]):
     """
@@ -274,7 +304,7 @@ def compute_roc_enrichment_factors(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05
     y_true : array-like of shape (n_samples,)
         True binary labels (0 or 1).
     y_score : array-like of shape (n_samples,)
-        Target scores, probablities, or decision function.
+        Target scores, probabilities, or decision function.
     fpr_levels : list of floats, optional (default=[0.01, 0.02, 0.05])
         FPR cutoffs at which to compute enrichment (e.g. 0.01 == 1%).
 
@@ -297,7 +327,7 @@ def compute_roc_enrichment_factors(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05
         enrichment[x] = tpr_at_x / x
     return enrichment
 
-def plot_roc_ef_grouped_bar(target_metrics, fpr_levels=[0.005, 0.01, 0.02, 0.05], save_path='roc_ef_grouped_bar.png'):
+def plot_roc_ef_grouped_bar(target_metrics, fpr_levels=[0.005, 0.01, 0.02, 0.05], save_path='roc_ef_grouped_bar.png', output_dir='results_DUD_E'):
     """
     Plot ROC Enrichment Factors (EFs) grouped by target in a single figure and save it.
 
@@ -305,8 +335,11 @@ def plot_roc_ef_grouped_bar(target_metrics, fpr_levels=[0.005, 0.01, 0.02, 0.05]
     - target_metrics (dict): Dictionary of target metrics.
     - fpr_levels (list): List of FPR levels to plot (e.g., [0.005, 0.01, 0.02, 0.05]).
     - save_path (str): Path to save the generated figure.
+    - output_dir (str): Directory where the figure should be saved.
     """
-    import pandas as pd
+
+    # Ensure the output directory exists
+    output_dir = ensure_output_dir(output_dir)
 
     # Create dataframe for plotting
     data = []
@@ -330,10 +363,12 @@ def plot_roc_ef_grouped_bar(target_metrics, fpr_levels=[0.005, 0.01, 0.02, 0.05]
     plt.legend(title='FPR Level')
     plt.tight_layout()
 
+    # Ensure save path is inside the specified output directory
+    save_path = os.path.join(output_dir, save_path)
+
     # Save figure
     plt.savefig(save_path, dpi=300)
     print(f"Figure saved to {save_path}")
 
     # Show figure
-    plt.show()
-
+    # plt.show()
