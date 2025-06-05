@@ -164,6 +164,46 @@ def compute_ef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05]):
         enrichment[x] = tpr_at_x / x
     return enrichment
 
+def compute_nef2(all_labels, all_affinities, fpr_levels=[0.01, 0.02, 0.05]):
+    
+    ef = compute_ef(all_labels, all_affinities, fpr_levels)
+    all_affinities = np.asarray(all_affinities)
+    all_labels = np.asarray(all_labels)
+
+    total = len(all_labels)
+    num_actives = np.sum(all_labels)
+
+    nef_dict = {}
+
+    # Edge case: empty input or no actives
+    if total == 0 or num_actives == 0:
+        return {level: 0.0 for level in fpr_levels}
+
+    for level in fpr_levels:
+        # Ensure level is a float between 0 and 1
+        if not (0 < level <= 1):
+            nef_dict[level] = 0.0
+            continue
+
+        top_n = int(total * level)
+
+        if top_n < 1:
+            nef_dict[level] = 0.0
+            continue
+
+        # Clamp top_n to avoid out-of-bounds or invalid indexing
+        top_n = min(top_n, total)
+
+        # Get indices of top_n highest affinity scores
+        expected_actives = num_actives * level
+
+        max_top_actives = min(num_actives, top_n)
+        max_ef = max_top_actives / expected_actives if expected_actives > 0 else 0.0
+
+        nef = ef[level] / max_ef if max_ef > 0 else 0.0
+        nef_dict[level] = nef
+    return nef_dict
+
 def compute_nef(all_labels, all_affinities, fpr_levels):
     all_affinities = np.asarray(all_affinities)
     all_labels = np.asarray(all_labels)
@@ -317,10 +357,49 @@ def bootstrap_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=10
 
     return nef_bootstrap
 
+def bootstrap_nef2(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
+    rng = np.random.default_rng(seed)
+    y_true = np.array(y_true)
+    y_score = np.array(y_score)
+
+    # Separate indices by class
+    class_0_indices = np.where(y_true == 0)[0]
+    class_1_indices = np.where(y_true == 1)[0]
+
+    n_class_0 = len(class_0_indices)
+    n_class_1 = len(class_1_indices)
+
+    nef_bootstrap = {fpr: [] for fpr in fpr_levels}
+
+    for _ in range(n_bootstrap):
+        # Stratified sampling with replacement within each class
+        sampled_class_0 = rng.choice(class_0_indices, size=n_class_0, replace=True)
+        sampled_class_1 = rng.choice(class_1_indices, size=n_class_1, replace=True)
+
+        # Combine indices
+        sampled_indices = np.concatenate([sampled_class_0, sampled_class_1])
+
+        y_resample = y_true[sampled_indices]
+        score_resample = y_score[sampled_indices]
+
+        # Ensure both classes present in resample
+        if len(np.unique(y_resample)) < 2:
+            continue
+
+        try:
+            nef = compute_nef2(y_resample, score_resample, fpr_levels)
+            for fpr in fpr_levels:
+                nef_bootstrap[fpr].append(nef[fpr])
+        except ValueError:
+            # Skip iteration if compute_nef fails (e.g. due to missing class)
+            continue
+
+    return nef_bootstrap
+
 def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.png',
                               method='mean', output_dir='results_DUD_E',
                               mode='Affinity', auc_mode='aff',
-                              reference_file='reference_metrics.xlsx'):
+                              reference_file='reference_metrics_def2018.xlsx'):
     """
     Plot NEF, EF, and AUC metrics for a given mode ('Affinity' or 'Pose'),
     and overlay reference values from an Excel file.
@@ -397,7 +476,7 @@ def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.pn
 
     # --- Plot ---
     fig, axs = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-    color = 'teal' if mode.lower() == 'affinity' else 'purple'
+    color = 'saddlebrown' if mode.lower() == 'affinity' else 'darksalmon'
     ref_color = 'gray'
 
     # NEF plot
@@ -407,7 +486,7 @@ def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.pn
                     fmt='s', ecolor=ref_color, color=ref_color, alpha=0.5, capsize=0, label='Sunseri & Koes 2021')
     axs[0].set_ylabel("NEF 1%")
     axs[0].set_ylim(0, 1)
-    axs[0].set_title(f"Dense ({mode})")
+    axs[0].set_title(f"Default ({mode})")
     axs[0].legend()
 
     # EF plot
@@ -478,7 +557,7 @@ def plot_roc_and_distributions(target_metrics,
         if len(set(labels)) > 1:
             fpr, tpr, _ = roc_curve(labels, poses)
             auc = roc_auc_score(labels, poses)
-            ax_pose.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='purple')
+            ax_pose.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='darksalmon')
         else:
             ax_pose.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
         ax_pose.plot([0, 1], [0, 1], linestyle='--', color='gray')
@@ -493,7 +572,7 @@ def plot_roc_and_distributions(target_metrics,
         if len(set(labels)) > 1:
             fpr, tpr, _ = roc_curve(labels, affinities)
             auc = roc_auc_score(labels, affinities)
-            ax_aff.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='teal')
+            ax_aff.plot(fpr, tpr, label=f'AUC = {auc:.2f}', color='saddlebrown')
         else:
             ax_aff.text(0.5, 0.5, "Insufficient label variation", ha='center', va='center')
         ax_aff.plot([0, 1], [0, 1], linestyle='--', color='gray')
@@ -616,82 +695,3 @@ def plot_ef_nef_grouped_bar_with_ci(target_metrics, output_dir='results_DUD_E', 
 
     print(f"Saved grouped EF plot to: {ef_path}")
     print(f"Saved grouped NEF plot to: {nef_path}")
-
-def compute_nef2(all_labels, all_affinities, fpr_levels):
-    
-    ef = compute_ef(all_labels, all_affinities, fpr_levels)
-    all_affinities = np.asarray(all_affinities)
-    all_labels = np.asarray(all_labels)
-
-    total = len(all_labels)
-    num_actives = np.sum(all_labels)
-
-    nef_dict = {}
-
-    # Edge case: empty input or no actives
-    if total == 0 or num_actives == 0:
-        return {level: 0.0 for level in fpr_levels}
-
-    for level in fpr_levels:
-        # Ensure level is a float between 0 and 1
-        if not (0 < level <= 1):
-            nef_dict[level] = 0.0
-            continue
-
-        top_n = int(total * level)
-
-        if top_n < 1:
-            nef_dict[level] = 0.0
-            continue
-
-        # Clamp top_n to avoid out-of-bounds or invalid indexing
-        top_n = min(top_n, total)
-
-        # Get indices of top_n highest affinity scores
-        expected_actives = num_actives * level
-
-        max_top_actives = min(num_actives, top_n)
-        max_ef = max_top_actives / expected_actives if expected_actives > 0 else 0.0
-
-        nef = ef[level] / max_ef if max_ef > 0 else 0.0
-        nef_dict[level] = nef
-    return nef_dict
-
-def bootstrap_nef2(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
-    rng = np.random.default_rng(seed)
-    y_true = np.array(y_true)
-    y_score = np.array(y_score)
-
-    # Separate indices by class
-    class_0_indices = np.where(y_true == 0)[0]
-    class_1_indices = np.where(y_true == 1)[0]
-
-    n_class_0 = len(class_0_indices)
-    n_class_1 = len(class_1_indices)
-
-    nef_bootstrap = {fpr: [] for fpr in fpr_levels}
-
-    for _ in range(n_bootstrap):
-        # Stratified sampling with replacement within each class
-        sampled_class_0 = rng.choice(class_0_indices, size=n_class_0, replace=True)
-        sampled_class_1 = rng.choice(class_1_indices, size=n_class_1, replace=True)
-
-        # Combine indices
-        sampled_indices = np.concatenate([sampled_class_0, sampled_class_1])
-
-        y_resample = y_true[sampled_indices]
-        score_resample = y_score[sampled_indices]
-
-        # Ensure both classes present in resample
-        if len(np.unique(y_resample)) < 2:
-            continue
-
-        try:
-            nef = compute_nef2(y_resample, score_resample, fpr_levels)
-            for fpr in fpr_levels:
-                nef_bootstrap[fpr].append(nef[fpr])
-        except ValueError:
-            # Skip iteration if compute_nef fails (e.g. due to missing class)
-            continue
-
-    return nef_bootstrap

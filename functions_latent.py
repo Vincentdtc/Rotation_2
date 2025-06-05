@@ -110,6 +110,7 @@ def get_data(code, predictions, method, top_n):
         label = entry['labels'][idx]
         pose = entry['pose_scores'][idx]
         affinity = entry['affinity_scores'][idx]
+        latent = entry['latent'][idx]
 
     elif method == 'max_pose':
         # Use the entry with the highest pose score
@@ -117,20 +118,22 @@ def get_data(code, predictions, method, top_n):
         label = entry['labels'][idx]
         pose = entry['pose_scores'][idx]
         affinity = entry['affinity_scores'][idx]
+        latent = entry['latent'][idx]
 
     elif method == 'mean':
         # Get indices of the top 3 entries by affinity score (sorted descending)
         top_idxs = np.argsort(entry['affinity_scores'])[::-1][:top_n]
 
-        # Compute mean values from the top 3 aligned entries
+        # Compute mean values from the top n aligned entries
         label = np.mean(entry['labels'][top_idxs])
         pose = np.mean(entry['pose_scores'][top_idxs])
         affinity = np.mean(entry['affinity_scores'][top_idxs])
+        latent = np.mean(entry['latent'][top_idxs])
 
     else:
         raise ValueError("Method must be 'max_aff', 'max_pose', or 'mean'.")
 
-    return label, pose, affinity
+    return label, pose, affinity, latent
 
 def compute_ef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05]):
     """

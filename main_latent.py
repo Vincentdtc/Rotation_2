@@ -10,13 +10,13 @@ from sklearn.metrics import roc_auc_score
 import pandas as pd
 
 # Local modules
-from functions import *
-from gnina_dense_model import Dense
+from functions_latent import *
+from gnina_dense_model_adjusted import Dense
 
 # === CONFIG === #
 DATA_ROOT, DATA_ROOT2, OUTPUT_ROOT = 'DUDE_data', 'dude_vs', 'ligands_sdf'
 WEIGHTS_PATH, TYPES_FILENAME = './weights/dense.pt', 'molgrid_input.types'
-BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, math.inf, 3, 'max_aff'
+BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, 9, 3, 'max_aff'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Set deterministic mode for reproducibility
@@ -157,21 +157,28 @@ def process_target(target_folder):
         # Forward pass: create grid and perform inference
         grid_maker.forward(batch, tensor, random_rotation=False, random_translation=0.0)
         with torch.no_grad():
-            pose, affinity = model(tensor)
+            pose, affinity, latent = model(tensor)
 
         # Convert outputs to NumPy arrays once
         labels_np = float_labels.cpu().numpy()
         codes_np = float_codes.cpu().numpy().astype(np.int64)
         poses_np = pose.cpu().numpy()
+        latent_np = latent.cpu().numpy()
         affinities_np = affinity[:, 0].cpu().numpy()
 
         # Batch insert predictions
         for i, code in enumerate(codes_np):
             if code not in predictions:
-                predictions[code] = {'labels': [], 'pose_scores': [], 'affinity_scores': []}
+                predictions[code] = {
+                    'labels': [],
+                    'pose_scores': [], 
+                    'affinity_scores': [], 
+                    'latent': []
+                    }
             predictions[code]['labels'].append(labels_np[i])
             predictions[code]['pose_scores'].append(poses_np[i])
             predictions[code]['affinity_scores'].append(affinities_np[i])
+            predictions[code]['latent'].append(latent_np[i])
 
     # Compute metrics for the current target
     print(f"[INFO] Computing metrics for target: {target_folder}")
@@ -179,14 +186,15 @@ def process_target(target_folder):
 
 def compute_metrics(target, predictions):
     """Compute ROC AUC, Pearson correlation, and store max-score data."""
-    all_affinities, all_labels, all_poses = [], [], []
+    all_affinities, all_labels, all_poses, all_latents = [], [], [], []
 
     # Helper function to extract data from predictions
     for code in sorted(predictions.keys()):
-        label, pose, affinity = get_data(code, predictions, METHOD, TOP_N)
+        label, pose, affinity, latent = get_data(code, predictions, METHOD, TOP_N)
         all_affinities.append(affinity)
         all_labels.append(label)
         all_poses.append(pose)
+        all_latents.append(latent)
 
     # Compute metrics only if both classes are present
     has_both_classes = len(set(all_labels)) > 1
@@ -259,6 +267,17 @@ def compute_metrics(target, predictions):
     summarize_bootstrapped_metric(boot_efs_aff, "EF (Affinity)", target_metrics[target])
     summarize_bootstrapped_metric(boot_nefs_aff, "NEF (Affinity)", target_metrics[target])
 
+    # Ensure the directory exists
+    os.makedirs("results_DUD_E", exist_ok=True)
+
+    # === Save latent vectors and labels for t-SNE === #
+    latent_array = np.vstack(all_latents)  # shape: (n_ligands, latent_dim)
+    label_array = np.array(all_labels)     # shape: (n_ligands,)
+
+    latent_save_path = os.path.join("results_DUD_E", f"{target}_latent.npz")
+    np.savez_compressed(latent_save_path, X=latent_array, y=label_array)
+    print(f"[INFO] Saved latent vectors to: {latent_save_path}")
+
 # === MAIN EXECUTION LOOP === #
 for folder in sorted(os.listdir(DATA_ROOT)):
     if os.path.isdir(os.path.join(DATA_ROOT, folder)):
@@ -288,9 +307,6 @@ print("\n==== AGGREGATE METRICS OVER ALL TARGETS ====")
 for key in summary_keys:
     mean_val, median_val = summarize_metric(key)
     print(f"{key} -> Mean: {mean_val:.4f}, Median: {median_val:.4f}")
-
-# Ensure the directory exists
-os.makedirs("results_DUD_E", exist_ok=True)
 
 # === SAVE ALL TARGET METRICS TO CSV === #
 # Convert all values in the dict to strings so they can be safely written to CSV

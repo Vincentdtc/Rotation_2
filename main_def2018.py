@@ -10,13 +10,13 @@ from sklearn.metrics import roc_auc_score
 import pandas as pd
 
 # Local modules
-from functions import *
-from gnina_dense_model import Dense
+from functions_def2018 import *
+from default2018_model import *
 
 # === CONFIG === #
 DATA_ROOT, DATA_ROOT2, OUTPUT_ROOT = 'DUDE_data', 'dude_vs', 'ligands_sdf'
-WEIGHTS_PATH, TYPES_FILENAME = './weights/dense.pt', 'molgrid_input.types'
-BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, math.inf, 3, 'max_aff'
+WEIGHTS_PATH, TYPES_FILENAME = './weights/crossdock_default2018.pt', 'molgrid_input.types'
+BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, 9, 3, 'max_aff'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Set deterministic mode for reproducibility
@@ -30,7 +30,7 @@ per_target_data = {}    # For storing per-target predictions
 
 # === MODEL LOADING === #
 def load_model(input_dims):
-    model = Dense(input_dims).to(DEVICE)
+    model = Net(input_dims).to(DEVICE)
     model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
     model.eval()
     return model
@@ -307,8 +307,8 @@ df.to_csv("results_DUD_E/full_target_metrics.csv")
 
 # === VISUALIZATION FUNCTIONS === #
 print("\n==== SAVING RESULTS ====")
-plot_bootstrapped_metrics(target_metrics, save_path='metrics_affinity.png', mode='Affinity', auc_mode='aff', reference_file='reference_metrics.xlsx')
-plot_bootstrapped_metrics(target_metrics, save_path='metrics_pose.png', mode='Pose', auc_mode='pose', reference_file='reference_metrics.xlsx')
+plot_bootstrapped_metrics(target_metrics, save_path='metrics_affinity.png', mode='Affinity', auc_mode='aff', reference_file='reference_metrics_def2018.xlsx')
+plot_bootstrapped_metrics(target_metrics, save_path='metrics_pose.png', mode='Pose', auc_mode='pose', reference_file='reference_metrics_def2018.xlsx')
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Affinity')
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Pose')
 plot_roc_and_distributions(target_metrics)
