@@ -1,4 +1,3 @@
-# Imports
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
@@ -48,10 +47,10 @@ class Dense(nn.Module):
             x = module(x)
             if isinstance(module, nn.Conv3d):
                 x = F.relu(x)
-        
+        latent = x  # [batch_size, features] — this is the latent space vector representation
         affinity = self.affinity_output(x)
         pose = F.softmax(self.pose_output(x),dim=1)[:,1]
-        return pose, affinity
+        return pose, affinity, latent
 
 class DenseBlock(nn.Module):
     def __init__(self, input_feats, level, convolutions=4, num_dense_filters=16):
