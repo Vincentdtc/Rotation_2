@@ -78,11 +78,6 @@ def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path
 
         chembl_counts[chembl_id] += 1
 
-    # # Report ChEMBL IDs with fewer than `number` entries
-    # for chembl_id in seen_chembl_ids:
-    #     if chembl_counts[chembl_id] < number:
-    #         print(f"{chembl_id}: only {chembl_counts[chembl_id]} conformers found")
-
 def get_data(code, predictions, method, top_n):
     """
     Extract data for a given input code from predictions based on the specified method.
@@ -100,15 +95,14 @@ def get_data(code, predictions, method, top_n):
     labels = np.array(entry['labels'])
     poses = np.array(entry['pose_scores'])
     affinities = np.array(entry['affinity_scores'])
-    latents = np.array(entry['latent_vectors'])
 
     if method == 'max_aff':
         idx = np.argmax(affinities)
-        return labels[idx], poses[idx], affinities[idx], latents[idx]
+        return labels[idx], poses[idx], affinities[idx]
 
     elif method == 'max_pose':
         idx = np.argmax(poses)
-        return labels[idx], poses[idx], affinities[idx], latents[idx]
+        return labels[idx], poses[idx], affinities[idx]
 
     elif method == 'mean':
         top_idxs = np.argsort(affinities)[-top_n:][::-1]
@@ -116,7 +110,6 @@ def get_data(code, predictions, method, top_n):
             np.mean(labels[top_idxs]),
             np.mean(poses[top_idxs]),
             np.mean(affinities[top_idxs]),
-            np.mean(latents[top_idxs], axis=0)
         )
 
     else:

@@ -5,18 +5,17 @@ import torch
 import molgrid
 import numpy as np
 from glob import glob
-from scipy.stats import pearsonr
 from sklearn.metrics import roc_auc_score
 import pandas as pd
 
 # Local modules
-from functions import *
-from gnina_dense_model import Dense
+from functions_vec import *
+from gnina_dense_model_vec import Dense
 
 # === CONFIG === #
 DATA_ROOT, DATA_ROOT2, OUTPUT_ROOT, OUTPUT_ROOT2 = 'DUDE_data', 'dude_vs', 'ligands_sdf', 'results_DUD_E'
 WEIGHTS_PATH, TYPES_FILENAME = './weights/dense.pt', 'molgrid_input.types'
-BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, 9, 3, 'max_aff'
+BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, math.inf, 3, 'max_aff'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Set deterministic mode for reproducibility
@@ -127,7 +126,7 @@ def process_target(target_folder):
 
     # Step 3: Setup MolGrid provider and tensors
     print(f"[INFO] Setting up MolGrid provider for target: {target_folder}")
-    provider = molgrid.ExampleProvider(data_root='.', balanced=False, shuffle=True, cache_structs=True)
+    provider = molgrid.ExampleProvider(data_root='.', balanced=False, shuffle=False, cache_structs=True)
     provider.populate(types_file)
 
     grid_maker, dims, tensor = prepare_gridmaker_and_tensor(provider)
@@ -156,15 +155,15 @@ def process_target(target_folder):
 
         # Forward pass: create grid and perform inference
         grid_maker.forward(batch, tensor, random_rotation=False, random_translation=0.0)
+        
         with torch.no_grad():
-            pose, affinity, latent = model(tensor)
+            pose, affinity = model(tensor)
 
         # Convert outputs to NumPy arrays once
         labels_np = float_labels.cpu().numpy()
         codes_np = float_codes.cpu().numpy().astype(np.int64)
         poses_np = pose.cpu().numpy()
         affinities_np = affinity[:, 0].cpu().numpy()
-        latent = latent.cpu().numpy()
 
         # Batch insert predictions
         for i, code in enumerate(codes_np):
@@ -173,12 +172,10 @@ def process_target(target_folder):
                     'labels': [], 
                     'pose_scores': [], 
                     'affinity_scores': [],
-                    'latent_vectors': []
                     }
             predictions[code]['labels'].append(labels_np[i])
             predictions[code]['pose_scores'].append(poses_np[i])
             predictions[code]['affinity_scores'].append(affinities_np[i])
-            predictions[code]['latent_vectors'].append(latent[i])
 
     # Compute metrics for the current target
     print(f"[INFO] Computing metrics for target: {target_folder}")
@@ -186,15 +183,14 @@ def process_target(target_folder):
 
 def compute_metrics(target, predictions):
     """Compute ROC AUC, Pearson correlation, and store max-score data."""
-    all_affinities, all_labels, all_poses, all_latent_vecs = [], [], [], []
+    all_affinities, all_labels, all_poses= [], [], []
 
     # Helper function to extract data from predictions
     for code in sorted(predictions.keys()):
-        label, pose, affinity, latent_vec = get_data(code, predictions, METHOD, TOP_N)
+        label, pose, affinity = get_data(code, predictions, METHOD, TOP_N)
         all_affinities.append(affinity)
         all_labels.append(label)
         all_poses.append(pose)
-        all_latent_vecs.append(latent_vec)
 
     # Compute metrics only if both classes are present
     has_both_classes = len(set(all_labels)) > 1
@@ -202,7 +198,6 @@ def compute_metrics(target, predictions):
     if has_both_classes:
         roc_auc_pose = roc_auc_score(all_labels, all_poses)
         roc_auc_aff = roc_auc_score(all_labels, all_affinities)
-        pearson_corr = pearsonr(all_poses, all_affinities)[0]
 
         # Bootstrap AUCs
         boot_aff = bootstrap_roc_auc(all_labels, all_affinities)
@@ -218,7 +213,7 @@ def compute_metrics(target, predictions):
         ci_aff = (np.percentile(boot_aff, 2.5), np.percentile(boot_aff, 97.5))
         ci_pose = (np.percentile(boot_pose, 2.5), np.percentile(boot_pose, 97.5))
     else:
-        roc_auc_pose = roc_auc_aff = pearson_corr = None
+        roc_auc_pose = roc_auc_aff = None
     
     num_ligands = sum(len(v) for v in predictions.values())
     num_unique_ligands = len(set(all_affinities))
@@ -236,7 +231,6 @@ def compute_metrics(target, predictions):
         'num_decoys': num_unique_decoys,
         'roc_auc(pose)': roc_auc_pose,
         'roc_auc(affinity)': roc_auc_aff,
-        'pearson_correlation': round(pearson_corr,2),
         'boot_aff_mean': mean_aff,
         'boot_aff_median': median_aff,
         'boot_aff_ci': ci_aff,
@@ -252,28 +246,15 @@ def compute_metrics(target, predictions):
     def summarize_bootstrapped_metric(boot_results, prefix, target_metrics_entry):
         for fpr, ef_list in boot_results.items():
             ef_mean = np.mean(ef_list)
-            #ef_median = np.median(ef_list)
             ef_ci = (np.percentile(ef_list, 2.5), np.percentile(ef_list, 97.5))
 
             target_metrics_entry[f'{prefix} {fpr*100:.1f}%'] = ef_mean
-            #target_metrics_entry[f'{prefix} {fpr*100:.1f}% median'] = ef_median
             target_metrics_entry[f'{prefix} {fpr*100:.1f}% CI'] = ef_ci
 
     summarize_bootstrapped_metric(boot_efs_pose, "EF (Pose)", target_metrics[target])
     summarize_bootstrapped_metric(boot_nefs_pose, "NEF (Pose)", target_metrics[target])
     summarize_bootstrapped_metric(boot_efs_aff, "EF (Affinity)", target_metrics[target])
     summarize_bootstrapped_metric(boot_nefs_aff, "NEF (Affinity)", target_metrics[target])
-
-    # Ensure the directory exists
-    os.makedirs(OUTPUT_ROOT2, exist_ok=True)
-
-    # === Save latent vectors and labels for t-SNE === #
-    latent_array = np.vstack(all_latent_vecs)  # shape: (n_ligands, latent_dim)
-    label_array = np.array(all_labels)     # shape: (n_ligands,)
-
-    latent_save_path = os.path.join(OUTPUT_ROOT2, f"{target}_latent.npz")
-    np.savez_compressed(latent_save_path, X=latent_array, y=label_array)
-    print(f"[INFO] Saved latent vectors to: {latent_save_path}")
 
 # === MAIN EXECUTION LOOP === #
 for folder in sorted(os.listdir(DATA_ROOT)):
@@ -305,18 +286,15 @@ for key in summary_keys:
 # Ensure the directory exists
 os.makedirs(OUTPUT_ROOT2, exist_ok=True)
 
-# === SAVE ALL TARGET METRICS TO CSV === #
-# Convert all values in the dict to strings so they can be safely written to CSV
+# Save all metrics to CSV
+excluded_keys = {'labels', 'affinity_scores', 'pose_scores'}
 stringified_metrics = {}
-
 for target, metrics in target_metrics.items():
-    stringified_metrics[target] = {k: str(v) for k, v in metrics.items()}
+    filtered = {k: str(v) for k, v in metrics.items() if k not in excluded_keys}
+    stringified_metrics[target] = filtered
 
-# Create DataFrame
 df = pd.DataFrame.from_dict(stringified_metrics, orient='index')
-
-# Save to CSV inside the folder results_DUD_E
-df.to_csv(f"{OUTPUT_ROOT2}/full_target_metrics.csv")
+df.to_csv(os.path.join(OUTPUT_ROOT2, "full_target_metrics.csv"))
 
 # === VISUALIZATION FUNCTIONS === #
 print("\n==== SAVING RESULTS ====")

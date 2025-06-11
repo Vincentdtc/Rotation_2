@@ -1,0 +1,5 @@
+1 0 FEP/FEP_data/charge_annhil/jnk1/jnk1_protein.pdb FEP/FEP_ligands_sdf/charge_annhil/jnk1/active_6a_0.sdf
+1 1 FEP/FEP_data/charge_annhil/jnk1/jnk1_protein.pdb FEP/FEP_ligands_sdf/charge_annhil/jnk1/active_19a_neu_1.sdf
+1 2 FEP/FEP_data/charge_annhil/jnk1/jnk1_protein.pdb FEP/FEP_ligands_sdf/charge_annhil/jnk1/active_19b_neu_2.sdf
+1 3 FEP/FEP_data/charge_annhil/jnk1/jnk1_protein.pdb FEP/FEP_ligands_sdf/charge_annhil/jnk1/active_19b_charg_3.sdf
+1 4 FEP/FEP_data/charge_annhil/jnk1/jnk1_protein.pdb FEP/FEP_ligands_sdf/charge_annhil/jnk1/active_19a_charg_4.sdf
