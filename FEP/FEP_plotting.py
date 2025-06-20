@@ -1,71 +1,71 @@
 import os
-import matplotlib.pyplot as plt
-from scipy.stats import pearsonr, kendalltau, spearmanr
-import seaborn as sns
-import pandas as pd
-from matplotlib.patches import Patch
 import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
-# === RESULTS FOLDER === #
+# === Constants === #
 RESULTS_DIR = "FEP/results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
 def plot_boxplot_with_jitter(FEP_data, output_file="boxplot_with_jitter.png"):
     """
-    Generate a boxplot with overlaid jittered points showing affinity differences
-    to experimental values, based on Dense, Def2018, and Valsson et al. 2025 predictions.
+    Generate a boxplot with jittered points showing affinity differences
+    between predicted and experimental values, across different models.
+
+    Args:
+        FEP_data (dict): Dictionary containing FEP results per target and ligand.
+        output_file (str): Filename for the saved boxplot image.
     """
-
-    os.makedirs(RESULTS_DIR, exist_ok=True)
     output_path = os.path.join(RESULTS_DIR, output_file)
-
     data = []
+
+    # Collect differences for each model
     for target, ligands in FEP_data.items():
         for values in ligands.values():
-            if 'exp_value' in values:
-                exp = values['exp_value']
+            exp = values.get('exp_value')
+            if exp is None:
+                continue
 
-                if 'affinity_scores_Dense' in values and values['affinity_scores_Dense'] is not None:
+            for model_key, label in [
+                ('affinity_scores_Dense', 'Dense'),
+                ('affinity_scores_Def2018', 'Default'),
+                ('pred_value', 'Valsson et al. 2025')
+            ]:
+                pred = values.get(model_key)
+                if pred is not None:
                     data.append({
                         'Target': target,
-                        'Difference (kcal/mol)': values['affinity_scores_Dense'] - exp,
-                        'Type': 'Dense'
-                    })
-
-                if 'affinity_scores_Def2018' in values and values['affinity_scores_Def2018'] is not None:
-                    data.append({
-                        'Target': target,
-                        'Difference (kcal/mol)': values['affinity_scores_Def2018'] - exp,
-                        'Type': 'Default'
-                    })
-
-                if 'pred_value' in values and values['pred_value'] is not None:
-                    data.append({
-                        'Target': target,
-                        'Difference (kcal/mol)': values['pred_value'] - exp,
-                        'Type': 'Valsson et al. 2025'
+                        'Difference (kcal/mol)': pred - exp,
+                        'Type': label
                     })
 
     df = pd.DataFrame(data)
 
     plt.figure(figsize=(20, 8))
 
-    # Define consistent colors for boxplots
+    # Color palette for models
     palette = {
         'Dense': '#66c2a5',
         'Default': '#fc8d62',
         'Valsson et al. 2025': '#8da0cb'
     }
 
-    # Boxplot
-    ax = sns.boxplot(x='Target', y='Difference (kcal/mol)', hue='Type', data=df,
-                     showfliers=False, palette=palette)
+    # Boxplot without outliers
+    ax = sns.boxplot(
+        x='Target', y='Difference (kcal/mol)', hue='Type', data=df,
+        showfliers=False, palette=palette
+    )
 
-    # Stripplot with fixed grey color
-    sns.stripplot(x='Target', y='Difference (kcal/mol)', hue='Type', data=df,
-                  dodge=True, marker='o', alpha=0.1, size=6, palette='dark:gray', legend=False)
+    # Overlay jittered (strip) points
+    sns.stripplot(
+        x='Target', y='Difference (kcal/mol)', hue='Type', data=df,
+        dodge=True, marker='o', alpha=0.1, size=6, palette='dark:gray', legend=False
+    )
 
-    # Custom legend handles using boxplot colors
+    # Custom legend
     custom_handles = [Patch(facecolor=palette[name], label=name) for name in palette]
     ax.legend(handles=custom_handles, title='Model')
 
@@ -76,50 +76,55 @@ def plot_boxplot_with_jitter(FEP_data, output_file="boxplot_with_jitter.png"):
     plt.savefig(output_path, dpi=600)
     plt.close()
 
+
 def plot_kde_affinity_differences(FEP_data, output_file="kde_plots_per_target.png"):
-    RESULTS_DIR = "FEP/results"
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    """
+    Generate KDE plots of affinity differences per model across all targets.
+
+    Args:
+        FEP_data (dict): Dictionary containing FEP results per target and ligand.
+        output_file (str): Filename for the saved KDE plot image.
+    """
     output_path = os.path.join(RESULTS_DIR, output_file)
-
-    # Prepare data
     data = []
+
+    # Collect differences per model
     for target, ligands in FEP_data.items():
-        for ligand, values in ligands.items():
-            if 'exp_value' in values:
-                exp_value = values['exp_value']
+        for values in ligands.values():
+            exp = values.get('exp_value')
+            if exp is None:
+                continue
 
-                if 'affinity_scores_Dense' in values and values['affinity_scores_Dense'] is not None:
-                    diff_dense_exp = values['affinity_scores_Dense'] - exp_value
-                    data.append({'Target': target, 'Difference': diff_dense_exp, 'Type': 'Dense'})
-
-                if 'affinity_scores_Def2018' in values and values['affinity_scores_Def2018'] is not None:
-                    diff_def2018_exp = values['affinity_scores_Def2018'] - exp_value
-                    data.append({'Target': target, 'Difference': diff_def2018_exp, 'Type': 'Default'})
-
-                if 'pred_value' in values and values['pred_value'] is not None:
-                    diff_fep_exp = values['pred_value'] - exp_value
-                    data.append({'Target': target, 'Difference': diff_fep_exp, 'Type': 'Valsson et al. 2025'})
+            for model_key, label in [
+                ('affinity_scores_Dense', 'Dense'),
+                ('affinity_scores_Def2018', 'Default'),
+                ('pred_value', 'Valsson et al. 2025')
+            ]:
+                pred = values.get(model_key)
+                if pred is not None:
+                    data.append({
+                        'Target': target,
+                        'Difference': pred - exp,
+                        'Type': label
+                    })
 
     df = pd.DataFrame(data)
 
-    # Plot setup
     plt.figure(figsize=(24, 12))
 
-    # Manually plot each 'Type'
-    for t in df['Type'].unique():
-        subset = df[df['Type'] == t]
-        sns.kdeplot(data=subset, x='Difference', fill=True, alpha=0.3, label=t)
+    # Plot KDEs per model
+    for model_type in df['Type'].unique():
+        subset = df[df['Type'] == model_type]
+        sns.kdeplot(
+            data=subset, x='Difference', fill=True, alpha=0.3, label=model_type
+        )
 
     plt.axvline(0, color='gray', linestyle='--', linewidth=2)
-
-    # Font sizes
-    #plt.title('Kernel Density Estimate of Affinity Differences to Experimental Values', fontsize=36, weight='bold')
     plt.xlabel('Difference (kcal/mol)', fontsize=28)
     plt.ylabel('Density', fontsize=28)
     plt.xticks(fontsize=22, rotation=45, ha='right')
     plt.yticks(fontsize=22)
 
-    # Add proper legend
     legend = plt.legend(title='Model', title_fontsize=24, fontsize=20)
     legend.get_frame().set_linewidth(0.0)
 
@@ -127,20 +132,16 @@ def plot_kde_affinity_differences(FEP_data, output_file="kde_plots_per_target.pn
     plt.savefig(output_path, dpi=600)
     plt.close()
 
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import pearsonr, spearmanr, kendalltau
 
-def plot_overall_correlation(FEP_data, target_metrics, save_path='FEP/results'):
+def plot_overall_correlation(FEP_data, target_metrics, save_path=RESULTS_DIR):
     """
-    Generate a figure with subplots showing scatter plots of predicted vs experimental values
-    for all models. Each subplot includes a y=x reference line.
+    Generate scatter plots of predicted vs experimental affinity for each model,
+    including an identity line (y = x).
 
     Args:
-        FEP_data (dict): FEP data with experimental and predicted values
-        target_metrics (dict): Metrics dictionary per target/model
-        save_path (str): Path to save the output figure
+        FEP_data (dict): Dictionary with experimental and predicted affinities.
+        target_metrics (dict): Dictionary of metrics per target/model.
+        save_path (str): Output directory to save the plot.
     """
     os.makedirs(save_path, exist_ok=True)
 
@@ -148,24 +149,22 @@ def plot_overall_correlation(FEP_data, target_metrics, save_path='FEP/results'):
     all_exp = {model: [] for model in models}
     all_pred = {model: [] for model in models}
 
-    # Collect predictions and experimental values across all targets
+    # Aggregate predictions and experimental values
     for target, metrics in target_metrics.items():
         for model in models:
             if model not in metrics:
                 continue
-            for ligand, data in FEP_data.get(target, {}).items():
-                if 'exp_value' not in data:
-                    continue
-                exp = data['exp_value']
+            for ligand, values in FEP_data.get(target, {}).items():
+                exp = values.get('exp_value')
                 pred = (
-                    data.get('pred_value') if model == 'AEV-PLIG'
-                    else data.get(f'affinity_scores_{model}')
+                    values.get('pred_value') if model == 'AEV-PLIG'
+                    else values.get(f'affinity_scores_{model}')
                 )
-                if pred is not None and not (np.isnan(exp) or np.isnan(pred)):
+                if exp is not None and pred is not None and not (np.isnan(exp) or np.isnan(pred)):
                     all_exp[model].append(exp)
                     all_pred[model].append(pred)
 
-    # Plot setup
+    # Create subplots
     fig, axes = plt.subplots(1, 3, figsize=(20, 7), sharex=True, sharey=True)
     fig.suptitle("Predicted vs Experimental Affinity (All Models)", fontsize=28, fontweight='bold')
 
@@ -179,11 +178,12 @@ def plot_overall_correlation(FEP_data, target_metrics, save_path='FEP/results'):
             ax.axis('off')
             continue
 
-        # Plot scatter
+        # Scatter and reference line
         ax.scatter(exp_vals, pred_vals, alpha=0.6, s=60, label='Predictions')
-        ax.plot([exp_vals.min(), exp_vals.max()], [exp_vals.min(), exp_vals.max()], 'k--', label='Ideal: y = x')
+        ax.plot([exp_vals.min(), exp_vals.max()], [exp_vals.min(), exp_vals.max()],
+                'k--', label='Ideal: y = x')
 
-        ax.set_title(f'{model}', fontsize=24)
+        ax.set_title(model, fontsize=24)
         ax.set_xlabel('Experimental Affinity', fontsize=20)
         if i == 0:
             ax.set_ylabel('Predicted Affinity', fontsize=20)
