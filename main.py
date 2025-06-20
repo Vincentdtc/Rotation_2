@@ -1,4 +1,3 @@
-# === IMPORTS === #
 import os
 import math
 import torch
@@ -8,229 +7,196 @@ from glob import glob
 from sklearn.metrics import roc_auc_score
 import pandas as pd
 
-# Local modules
-from functions_vec import *
-from gnina_dense_model_vec import Dense
+from functions import *
+from gnina_dense_model import Dense
 
-# === CONFIG === #
-DATA_ROOT, DATA_ROOT2, OUTPUT_ROOT, OUTPUT_ROOT2 = 'DUDE_data', 'dude_vs', 'ligands_sdf', 'results_DUD_E'
-WEIGHTS_PATH, TYPES_FILENAME = './weights/dense.pt', 'molgrid_input.types'
-BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, math.inf, 3, 'max_aff'
+# === CONFIGURATION === #
+DATA_ROOT = 'DUDE_data'
+DATA_ROOT2 = 'dude_vs'
+OUTPUT_ROOT = 'ligands_sdf'
+OUTPUT_ROOT2 = 'results_DUD_E'
+WEIGHTS_PATH = './weights/dense.pt'
+TYPES_FILENAME = 'molgrid_input.types'
+BATCH_SIZE = 1
+NUM_CONFORMERS = math.inf
+TOP_N = 3
+METHOD = 'max_aff'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Set deterministic mode for reproducibility
+# Ensure reproducible behavior
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 # === GLOBALS === #
 model = None
-target_metrics = {}     # For storing per-target ROC AUC and correlations
-per_target_data = {}    # For storing per-target predictions
+target_metrics = {}     # Will store per-target performance metrics
+per_target_data = {}    # Will collect per-target predictions
 
-# === MODEL LOADING === #
 def load_model(input_dims):
-    model = Dense(input_dims).to(DEVICE)
-    model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
-    model.eval()
-    return model
+    """
+    Initialize and load Dense model with pretrained weights.
 
-# === GRID SETUP === #
+    Args:
+        input_dims (tuple): Expected input dimensions for model.
+
+    Returns:
+        torch.nn.Module: Loaded model in evaluation mode.
+    """
+    mdl = Dense(input_dims).to(DEVICE)
+    mdl.load_state_dict(torch.load(WEIGHTS_PATH, map_location=DEVICE))
+    mdl.eval()
+    return mdl
+
 def prepare_gridmaker_and_tensor(provider):
-    grid_maker = molgrid.GridMaker(resolution=0.5, dimension=23.5)
-    dims = grid_maker.grid_dimensions(provider.num_types())
+    """
+    Set up molgrid GridMaker and an empty tensor placeholder.
+
+    Args:
+        provider (molgrid.ExampleProvider): provider for ligand examples.
+
+    Returns:
+        grid_maker, dims, tensor: For populating and running model inference.
+    """
+    gm = molgrid.GridMaker(resolution=0.5, dimension=23.5)
+    dims = gm.grid_dimensions(provider.num_types())
     tensor = torch.empty((BATCH_SIZE, *dims), dtype=torch.float32, device=DEVICE)
-    return grid_maker, dims, tensor
+    return gm, dims, tensor
 
-# === TARGET PROCESSING === #
 def process_target(target_folder):
-    """Process one target for active/decoy inference and feature generation."""
-    target_path = os.path.join(DATA_ROOT, target_folder)
-    target_path_missing = os.path.join(DATA_ROOT2, target_folder)
-    receptor_file = os.path.join(DATA_ROOT2, target_folder, 'receptor.pdbqt')
-    types_file = os.path.join(target_path, TYPES_FILENAME)
-    output_dir = os.path.join(OUTPUT_ROOT, target_folder)
+    """
+    Handle one target: extract docked ligands, run model inference,
+    and compute performance metrics.
 
-    # Ensure receptor exists
-    if not os.path.isfile(receptor_file):
+    Args:
+        target_folder (str): Name of target directory under DATA_ROOT.
+    """
+    # Construct paths
+    tgt1 = os.path.join(DATA_ROOT, target_folder)
+    tgt2 = os.path.join(DATA_ROOT2, target_folder)
+    receptor = os.path.join(tgt2, 'receptor.pdbqt')
+    types_file = os.path.join(tgt1, TYPES_FILENAME)
+    out_dir = os.path.join(OUTPUT_ROOT, target_folder)
+
+    # Skip if receptor is missing
+    if not os.path.isfile(receptor):
         print(f"[SKIP] Receptor not found for {target_folder}")
         return
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Step 1: Unzip any compressed SDFs
-    print(f"[INFO] Extracting SDF files for target: {target_folder}")
-    extract_sdf_gz_files(target_path, "_docked_vina.sdf.gz")
-    extract_sdf_gz_files(target_path_missing, "_docked_vina.sdf.gz")
+    # Step 1. Unzip any compressed SDFs
+    print(f"[INFO] Extracting SDFs for {target_folder}")
+    extract_sdf_gz_files(tgt1, "_docked_vina.sdf.gz")
+    extract_sdf_gz_files(tgt2, "_docked_vina.sdf.gz")
 
-    # Step 2: Process actives and decoys into .types format
+    # Step 2. Write .types input
     with open(types_file, 'w') as tf:
-        # === Actives === #
-        actives_sdf = os.path.join(target_path, 'actives_final_docked_vina.sdf')
-        actives_missing_sdf = os.path.join(target_path_missing, 'missing_actives_docked_vina.sdf')
-        
-        process_molecules(
-                sdf_path=actives_sdf,
-                number=NUM_CONFORMERS,
-                label=1,
-                prefix='active',
-                output_dir=output_dir,
-                receptor_path=receptor_file,
-                types_file_handle=tf,
-                batch_num=0
-            )
+        # Actives
+        process_molecules(os.path.join(tgt1, 'actives_final_docked_vina.sdf'),
+                          NUM_CONFORMERS, 1, 'active', out_dir, receptor, tf, 0)
+        missing_act = os.path.join(tgt2, 'missing_actives_docked_vina.sdf')
+        if os.path.isfile(missing_act) and os.path.getsize(missing_act) > 0:
+            process_molecules(missing_act, NUM_CONFORMERS, 1,
+                              'active_missing', out_dir, receptor, tf, 0)
+        # Decoys
+        for idx, decoy in enumerate(glob(os.path.join(tgt1, 'decoys_final_*_docked_vina.sdf'))):
+            process_molecules(decoy, NUM_CONFORMERS, 0,
+                              'decoy', out_dir, receptor, tf, idx)
+        missing_decoys = glob(os.path.join(tgt2, 'missing_decoys_docked_vina.sdf'))
+        for missing in missing_decoys:
+            if os.path.isfile(missing) and os.path.getsize(missing) > 0:
+                process_molecules(missing, NUM_CONFORMERS, 0,
+                                  'decoy_missing', out_dir, receptor, tf, idx)
 
-        # Check if there are missing actives in dataroot2
-        if os.path.isfile(actives_missing_sdf) and os.path.getsize(actives_missing_sdf) > 0:
-            process_molecules(
-                sdf_path=actives_missing_sdf,
-                number=NUM_CONFORMERS,
-                label=1,
-                prefix='active_missing',
-                output_dir=output_dir,
-                receptor_path=receptor_file,
-                types_file_handle=tf,
-                batch_num=0
-            )
-
-        # === Decoys === #
-        decoy_files = glob(os.path.join(target_path, 'decoys_final_*_docked_vina.sdf'))
-        missing_decoys = glob(os.path.join(target_path_missing, 'missing_decoys_docked_vina.sdf'))
-
-        for batch_num, decoy_file in enumerate(decoy_files):
-            decoy_batch_dir = os.path.join(output_dir, f"decoy_batch_{batch_num}")
-            os.makedirs(decoy_batch_dir, exist_ok=True)
-            
-            process_molecules(
-                    sdf_path=decoy_file,
-                    number=NUM_CONFORMERS,
-                    label=0,
-                    prefix='decoy',
-                    output_dir=output_dir,
-                    receptor_path=receptor_file,
-                    types_file_handle=tf,
-                    batch_num=batch_num
-                )
-        #Process missing decoys        
-        for missing_file in missing_decoys:
-            if os.path.isfile(missing_file) and os.path.getsize(missing_file) > 0:
-                process_molecules(
-                    sdf_path=missing_file,
-                    number=NUM_CONFORMERS,
-                    label=0,
-                    prefix='decoy_missing',
-                    output_dir=output_dir,
-                    receptor_path=receptor_file,
-                    types_file_handle=tf,
-                    batch_num=batch_num
-                    )
-
-    # Step 3: Setup MolGrid provider and tensors
-    print(f"[INFO] Setting up MolGrid provider for target: {target_folder}")
-    provider = molgrid.ExampleProvider(data_root='.', balanced=False, shuffle=False, cache_structs=True)
+    # Step 3. Initialize molgrid provider
+    print(f"[INFO] Populating MolGrid for {target_folder}")
+    provider = molgrid.ExampleProvider(data_root='.', balanced=False,
+                                       shuffle=False, cache_structs=True)
     provider.populate(types_file)
 
-    grid_maker, dims, tensor = prepare_gridmaker_and_tensor(provider)
-
-    # Step 4: Initialize model once
+    # Step 4. Set up grid maker and model
+    gm, dims, tensor = prepare_gridmaker_and_tensor(provider)
     global model
     if model is None:
         model = load_model(dims)
 
-    # Allocate label and code tensors
-    float_labels = torch.empty(BATCH_SIZE, dtype=torch.float32, device=DEVICE)
-    float_codes = torch.empty(BATCH_SIZE, dtype=torch.float32, device=DEVICE)
+    # Prepare tensors for labels and codes
+    label_tensor = torch.empty(BATCH_SIZE, dtype=torch.float32, device=DEVICE)
+    code_tensor = torch.empty(BATCH_SIZE, dtype=torch.float32, device=DEVICE)
 
     predictions = {}
     num_batches = math.ceil(provider.size() / BATCH_SIZE)
+    print(f"[INFO] Running {num_batches} batches for {target_folder}")
 
-    print(f"[INFO] Processing {num_batches} batches for target: {target_folder}")
     for _ in range(num_batches):
         batch = provider.next_batch(BATCH_SIZE)
         if batch is None:
             break
 
-        # Extract labels and ligand codes (used as unique IDs)
-        batch.extract_label(0, float_labels)
-        batch.extract_label(1, float_codes)
-
-        # Forward pass: create grid and perform inference
-        grid_maker.forward(batch, tensor, random_rotation=False, random_translation=0.0)
-        
+        batch.extract_label(0, label_tensor)
+        batch.extract_label(1, code_tensor)
+        gm.forward(batch, tensor, random_rotation=False, random_translation=0.)
         with torch.no_grad():
             pose, affinity = model(tensor)
 
-        # Convert outputs to NumPy arrays once
-        labels_np = float_labels.cpu().numpy()
-        codes_np = float_codes.cpu().numpy().astype(np.int64)
-        poses_np = pose.cpu().numpy()
-        affinities_np = affinity[:, 0].cpu().numpy()
+        labels = label_tensor.cpu().numpy()
+        codes = code_tensor.cpu().numpy().astype(np.int64)
+        poses = pose.cpu().numpy()
+        affinities = affinity[:, 0].cpu().numpy()
 
-        # Batch insert predictions
-        for i, code in enumerate(codes_np):
-            if code not in predictions:
-                predictions[code] = {
-                    'labels': [], 
-                    'pose_scores': [], 
-                    'affinity_scores': [],
-                    }
-            predictions[code]['labels'].append(labels_np[i])
-            predictions[code]['pose_scores'].append(poses_np[i])
-            predictions[code]['affinity_scores'].append(affinities_np[i])
+        # Store predictions per code
+        for i, code in enumerate(codes):
+            entry = predictions.setdefault(code, {
+                'labels': [], 'pose_scores': [], 'affinity_scores': []
+            })
+            entry['labels'].append(labels[i])
+            entry['pose_scores'].append(poses[i])
+            entry['affinity_scores'].append(affinities[i])
 
-    # Compute metrics for the current target
-    print(f"[INFO] Computing metrics for target: {target_folder}")
+    print(f"[INFO] Computing metrics for {target_folder}")
     compute_metrics(target_folder, predictions)
 
 def compute_metrics(target, predictions):
-    """Compute ROC AUC, Pearson correlation, and store max-score data."""
-    all_affinities, all_labels, all_poses= [], [], []
+    """
+    Compute ROC AUC, correlations, and early enrichment metrics.
 
-    # Helper function to extract data from predictions
-    for code in sorted(predictions.keys()):
-        label, pose, affinity = get_data(code, predictions, METHOD, TOP_N)
-        all_affinities.append(affinity)
-        all_labels.append(label)
-        all_poses.append(pose)
+    Populates target_metrics[target] with computed values.
+    """
+    affs, labs, poses = [], [], []
+    for code in sorted(predictions):
+        l, p, a = get_data(code, predictions, METHOD, TOP_N)
+        labs.append(l); poses.append(p); affs.append(a)
 
-    # Compute metrics only if both classes are present
-    has_both_classes = len(set(all_labels)) > 1
-
-    if has_both_classes:
-        roc_auc_pose = roc_auc_score(all_labels, all_poses)
-        roc_auc_aff = roc_auc_score(all_labels, all_affinities)
-
-        # Bootstrap AUCs
-        boot_aff = bootstrap_roc_auc(all_labels, all_affinities)
-        boot_pose = bootstrap_roc_auc(all_labels, all_poses)
-
-        # Compute central tendency
-        mean_aff = np.mean(boot_aff)
-        mean_pose = np.mean(boot_pose)
-        median_aff = np.median(boot_aff)
-        median_pose = np.median(boot_pose)
-
-        # Compute confidence intervals
+    # Check if both classes exist
+    if len(set(labs)) > 1:
+        auc_pose = roc_auc_score(labs, poses)
+        auc_aff = roc_auc_score(labs, affs)
+        boot_aff = bootstrap_roc_auc(labs, affs)
+        boot_pose = bootstrap_roc_auc(labs, poses)
+        mean_aff, mean_pose = np.mean(boot_aff), np.mean(boot_pose)
+        median_aff, median_pose = np.median(boot_aff), np.median(boot_pose)
         ci_aff = (np.percentile(boot_aff, 2.5), np.percentile(boot_aff, 97.5))
         ci_pose = (np.percentile(boot_pose, 2.5), np.percentile(boot_pose, 97.5))
     else:
-        roc_auc_pose = roc_auc_aff = None
-    
-    num_ligands = sum(len(v) for v in predictions.values())
-    num_unique_ligands = len(set(all_affinities))
-    num_unique_actives = int(sum(all_labels))
-    num_unique_decoys = num_unique_ligands - num_unique_actives
+        auc_pose = auc_aff = None
+        mean_aff = median_aff = mean_pose = median_pose = None
+        ci_aff = ci_pose = (None, None)
 
-    # Store metrics and data
+    total_ligs = sum(len(v['affinity_scores']) for v in predictions.values())
+    unique_ligs = len({tuple(v['affinity_scores']) for v in predictions.values()})
+    n_act = int(sum(labs))
+    n_decoy = unique_ligs - n_act
+
     target_metrics[target] = {
-        'labels': all_labels,
-        'pose_scores': all_poses,
-        'affinity_scores': all_affinities,
-        'num_ligands': num_ligands,
-        'num_unique_ligands': num_unique_ligands,
-        'num_actives': num_unique_actives,
-        'num_decoys': num_unique_decoys,
-        'roc_auc(pose)': roc_auc_pose,
-        'roc_auc(affinity)': roc_auc_aff,
+        'labels': labs,
+        'pose_scores': poses,
+        'affinity_scores': affs,
+        'num_ligands': total_ligs,
+        'num_unique_ligands': unique_ligs,
+        'num_actives': n_act,
+        'num_decoys': n_decoy,
+        'roc_auc(pose)': auc_pose,
+        'roc_auc(affinity)': auc_aff,
         'boot_aff_mean': mean_aff,
         'boot_aff_median': median_aff,
         'boot_aff_ci': ci_aff,
@@ -239,67 +205,55 @@ def compute_metrics(target, predictions):
         'boot_pose_ci': ci_pose,
     }
 
-    # Bootstrap enrichment factors
-    boot_efs_pose, boot_nefs_pose = bootstrap_ef_nef(all_labels, all_poses, fpr_levels=[0.01, 0.05, 0.1])
-    boot_efs_aff, boot_nefs_aff = bootstrap_ef_nef(all_labels, all_affinities, fpr_levels=[0.01, 0.05, 0.1])
+    pose_efs, pose_nefs = bootstrap_ef_nef(labs, poses, fpr_levels=[0.01, 0.05, 0.1])
+    aff_efs, aff_nefs = bootstrap_ef_nef(labs, affs, fpr_levels=[0.01, 0.05, 0.1])
 
-    def summarize_bootstrapped_metric(boot_results, prefix, target_metrics_entry):
-        for fpr, ef_list in boot_results.items():
-            ef_mean = np.mean(ef_list)
-            ef_ci = (np.percentile(ef_list, 2.5), np.percentile(ef_list, 97.5))
+    def summarize(results, prefix):
+        for fpr, arr in results.items():
+            m = np.mean(arr)
+            ci = (np.percentile(arr, 2.5), np.percentile(arr, 97.5))
+            target_metrics[target][f'{prefix} {fpr*100:.1f}%'] = m
+            target_metrics[target][f'{prefix} {fpr*100:.1f}% CI'] = ci
 
-            target_metrics_entry[f'{prefix} {fpr*100:.1f}%'] = ef_mean
-            target_metrics_entry[f'{prefix} {fpr*100:.1f}% CI'] = ef_ci
+    summarize(pose_efs, "EF (Pose)")
+    summarize(pose_nefs, "NEF (Pose)")
+    summarize(aff_efs, "EF (Affinity)")
+    summarize(aff_nefs, "NEF (Affinity)")
 
-    summarize_bootstrapped_metric(boot_efs_pose, "EF (Pose)", target_metrics[target])
-    summarize_bootstrapped_metric(boot_nefs_pose, "NEF (Pose)", target_metrics[target])
-    summarize_bootstrapped_metric(boot_efs_aff, "EF (Affinity)", target_metrics[target])
-    summarize_bootstrapped_metric(boot_nefs_aff, "NEF (Affinity)", target_metrics[target])
-
-# === MAIN EXECUTION LOOP === #
+# === MAIN EXECUTION === #
 for folder in sorted(os.listdir(DATA_ROOT)):
-    if os.path.isdir(os.path.join(DATA_ROOT, folder)):
+    path = os.path.join(DATA_ROOT, folder)
+    if os.path.isdir(path):
         print(f"\n[INFO] Processing target: {folder}")
         process_target(folder)
 
-# === OVERALL SUMMARY METRICS === #
-def summarize_metric(metric_key):
-    values = [metrics[metric_key] for metrics in target_metrics.values()
-              if metric_key in metrics and metrics[metric_key] is not None]
-    return np.mean(values), np.median(values)
+def summarize_metric(key):
+    vals = [m[key] for m in target_metrics.values() if key in m and m[key] is not None]
+    return np.mean(vals), np.median(vals)
 
-# Collect and print summary for each required metric
-summary_keys = [
-    'roc_auc(pose)', 
-    'roc_auc(affinity)',
-    'EF (Pose) 1.0%', 
-    'EF (Affinity) 1.0%',
-    'NEF (Pose) 1.0%', 
-    'NEF (Affinity) 1.0%',
-]
+print("\n==== AGGREGATE METRICS ====")
+for key in [
+    'roc_auc(pose)', 'roc_auc(affinity)',
+    'EF (Pose) 1.0%', 'EF (Affinity) 1.0%',
+    'NEF (Pose) 1.0%', 'NEF (Affinity) 1.0%'
+]:
+    mn, md = summarize_metric(key)
+    print(f"{key} -> Mean: {mn:.4f}, Median: {md:.4f}")
 
-print("\n==== AGGREGATE METRICS OVER ALL TARGETS ====")
-for key in summary_keys:
-    mean_val, median_val = summarize_metric(key)
-    print(f"{key} -> Mean: {mean_val:.4f}, Median: {median_val:.4f}")
-
-# Ensure the directory exists
 os.makedirs(OUTPUT_ROOT2, exist_ok=True)
 
-# Save all metrics to CSV
-excluded_keys = {'labels', 'affinity_scores', 'pose_scores'}
-stringified_metrics = {}
-for target, metrics in target_metrics.items():
-    filtered = {k: str(v) for k, v in metrics.items() if k not in excluded_keys}
-    stringified_metrics[target] = filtered
+# Save all target metrics to CSV
+rows = {t: {k: str(v) for k, v in m.items() if k not in ('labels','pose_scores','affinity_scores')}
+        for t, m in target_metrics.items()}
+pd.DataFrame.from_dict(rows, orient='index') \
+  .to_csv(os.path.join(OUTPUT_ROOT2, "full_target_metrics.csv"))
 
-df = pd.DataFrame.from_dict(stringified_metrics, orient='index')
-df.to_csv(os.path.join(OUTPUT_ROOT2, "full_target_metrics.csv"))
-
-# === VISUALIZATION FUNCTIONS === #
-print("\n==== SAVING RESULTS ====")
-plot_bootstrapped_metrics(target_metrics, save_path='metrics_affinity.png', mode='Affinity', auc_mode='aff', reference_file='reference_metrics.xlsx')
-plot_bootstrapped_metrics(target_metrics, save_path='metrics_pose.png', mode='Pose', auc_mode='pose', reference_file='reference_metrics.xlsx')
+# === PLOTS === #
+print("\n==== GENERATING FIGURES ====")
+plot_bootstrapped_metrics(target_metrics, save_path='metrics_affinity.png', mode='Affinity',
+                          auc_mode='aff', reference_file='reference_metrics.xlsx')
+plot_bootstrapped_metrics(target_metrics, save_path='metrics_pose.png', mode='Pose',
+                          auc_mode='pose', reference_file='reference_metrics.xlsx')
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Affinity')
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Pose')
 plot_roc_and_distributions(target_metrics)

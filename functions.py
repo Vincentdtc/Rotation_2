@@ -1,66 +1,96 @@
 # Imports
-import shutil
 import os
 import re
-import numpy as np
-from rdkit import Chem, RDLogger
 import gzip
-from collections import defaultdict
-from matplotlib import pyplot as plt
-import seaborn as sns
+import shutil
+import numpy as np
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from rdkit import Chem, RDLogger
+from collections import defaultdict
 from sklearn.metrics import roc_auc_score, roc_curve
-# Suppress RDKit warnings
+
+# Suppress RDKit warnings to keep output clean
 RDLogger.DisableLog('rdApp.*')
 
+
 def ensure_output_dir(base_dir='results_DUD_E'):
+    """
+    Ensure that the output directory exists; create it if it doesn't.
+
+    Parameters:
+        base_dir (str): Path to the directory.
+
+    Returns:
+        str: The path to the ensured directory.
+    """
     os.makedirs(base_dir, exist_ok=True)
     return base_dir
 
-def extract_sdf_gz_files(directory, ending):
-    # Walk through the directory
-    for root, dirs, files in os.walk(directory):
-        # Check if the specific file exists
+
+def extract_sdf_gz_files(directory, ending='.sdf.gz'):
+    """
+    Recursively search for .sdf.gz files in a directory and extract them.
+
+    Parameters:
+        directory (str): Root directory to search.
+        ending (str): File extension to match (default: '.sdf.gz').
+
+    Side Effects:
+        Extracted files saved alongside the compressed files (without .gz).
+    """
+    for root, _, files in os.walk(directory):
         for file in files:
             if file.endswith(ending):
-                # Construct the full path to the file
-                file_path = os.path.join(root, file)
-                
-                # Define the output file path (remove .gz from the name)
-                output_file_path = os.path.join(root, file.replace('.gz', ''))
-                
-                # Extract the file
-                with gzip.open(file_path, 'rb') as f_in:
-                    with open(output_file_path, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
+                gz_path = os.path.join(root, file)
+                extracted_path = os.path.join(root, file[:-3])  # Remove '.gz'
+
+                with gzip.open(gz_path, 'rb') as f_in, open(extracted_path, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+
 
 def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path, types_file_handle, batch_num=0):
-    supplier = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=False)
+    """
+    Extract molecules from an SDF file, filter by ChEMBL ID, save each molecule as an SDF file,
+    and write metadata to a types file.
 
-    chembl_counts = defaultdict(int)     # Tracks count per ChEMBL ID
-    seen_chembl_ids = set()              # To remember which IDs were seen
+    Parameters:
+        sdf_path (str): Path to the SDF file.
+        number (int): Max number of molecules per ChEMBL ID to process.
+        label (int or float): Label to write for the molecule (e.g., active=1, decoy=0).
+        prefix (str): Prefix to identify molecule type ('decoy' or 'active' must be in prefix).
+        output_dir (str): Directory to save individual molecule files.
+        receptor_path (str): Path to the receptor file (for metadata).
+        types_file_handle (file handle): Open file handle to write molecule metadata.
+        batch_num (int): Batch number for naming (useful for decoys).
+
+    Side Effects:
+        Writes molecule files and metadata to disk.
+    """
+    supplier = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=False)
+    chembl_counts = defaultdict(int)
+    seen_chembl_ids = set()
 
     for i, mol in enumerate(supplier):
         if mol is None:
             continue
 
-        # Extract ChEMBL ID from molecule title
+        # Extract ChEMBL ID from molecule title or assign fallback name
         title = mol.GetProp("_Name") if mol.HasProp("_Name") else f"mol_{i}"
         chembl_id = title.strip().split()[0]
-
         seen_chembl_ids.add(chembl_id)
 
-        # Only keep up to `number` molecules per ChEMBL ID
         if chembl_counts[chembl_id] >= number:
             continue
 
-        # Set the filename and path for the ligand based on prefix
+        # Prepare filename based on prefix type
         if 'decoy' in prefix:
             ligand_filename = f'{prefix}_batch{batch_num}_{chembl_id}_{chembl_counts[chembl_id]}.sdf'
         elif 'active' in prefix:
             ligand_filename = f'{prefix}_{chembl_id}_{chembl_counts[chembl_id]}.sdf'
         else:
-            raise ValueError("Prefix must contain 'decoy' or 'active' to specify molecule type.")
+            raise ValueError("Prefix must contain 'decoy' or 'active'.")
 
         ligand_path = os.path.join(output_dir, ligand_filename)
 
@@ -70,26 +100,27 @@ def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path
             print(f"Error writing molecule {i} ({chembl_id}) in batch {batch_num}: {e}")
             continue
 
-        # Extract a unique numeric code from the ChEMBL ID (if possible)
+        # Extract numeric code from ChEMBL ID for metadata
         unique_code = int(re.findall(r'\d+', chembl_id)[0])
 
-        # Write to the types file
+        # Write label, unique_code, receptor and ligand paths to types file
         types_file_handle.write(f'{label} {unique_code} {receptor_path} {ligand_path}\n')
 
         chembl_counts[chembl_id] += 1
 
+
 def get_data(code, predictions, method, top_n):
     """
-    Extract data for a given input code from predictions based on the specified method.
+    Extract label, pose, and affinity for a given code from predictions using specified method.
 
     Parameters:
-    - code (str): Identifier for the prediction entry.
-    - predictions (dict): Dictionary containing prediction data.
-    - method (str): 'max_aff', 'max_pose', or 'mean'.
-    - top_n (int): Number of top entries to average in 'mean' mode.
+        code (str): Identifier for the prediction.
+        predictions (dict): Prediction data dictionary.
+        method (str): 'max_aff', 'max_pose', or 'mean'.
+        top_n (int): Number of top affinities to average when method is 'mean'.
 
     Returns:
-    - label (float), pose (float), affinity (float), latent (np.array)
+        tuple: (label, pose_score, affinity_score)
     """
     entry = predictions[code]
     labels = np.array(entry['labels'])
@@ -98,53 +129,50 @@ def get_data(code, predictions, method, top_n):
 
     if method == 'max_aff':
         idx = np.argmax(affinities)
-        return labels[idx], poses[idx], affinities[idx]
-
     elif method == 'max_pose':
         idx = np.argmax(poses)
-        return labels[idx], poses[idx], affinities[idx]
-
     elif method == 'mean':
         top_idxs = np.argsort(affinities)[-top_n:][::-1]
-        return (
-            np.mean(labels[top_idxs]),
-            np.mean(poses[top_idxs]),
-            np.mean(affinities[top_idxs]),
-        )
-
+        return np.mean(labels[top_idxs]), np.mean(poses[top_idxs]), np.mean(affinities[top_idxs])
     else:
-        raise ValueError("Method must be 'max_aff', 'max_pose', or 'mean'.")
+        raise ValueError("Method must be one of ['max_aff', 'max_pose', 'mean'].")
+
+    return labels[idx], poses[idx], affinities[idx]
+
 
 def compute_ef_nef(all_labels, all_affinities, fpr_levels):
-    all_affinities = np.asarray(all_affinities)
-    all_labels = np.asarray(all_labels)
+    """
+    Compute Enrichment Factor (EF) and Normalized Enrichment Factor (NEF) at given FPR levels.
 
+    Parameters:
+        all_labels (array-like): Binary labels (0/1).
+        all_affinities (array-like): Affinity scores.
+        fpr_levels (list of floats): FPR cutoffs (between 0 and 1).
+
+    Returns:
+        tuple of dicts: (ef_dict, nef_dict) mapping FPR level to EF and NEF scores.
+    """
+    all_labels = np.asarray(all_labels)
+    all_affinities = np.asarray(all_affinities)
     total = len(all_labels)
     num_actives = np.sum(all_labels)
 
-    ef_dict = {}
-    nef_dict = {}
+    ef_dict, nef_dict = {}, {}
 
-    # Edge case: empty input or no actives
     if total == 0 or num_actives == 0:
-        return {level: 0.0 for level in fpr_levels}
+        print("No data or no actives to compute EF/NEF.")
+        return {level: 0.0 for level in fpr_levels}, {level: 0.0 for level in fpr_levels}
 
     for level in fpr_levels:
-        # Ensure level is a float between 0 and 1
         if not (0 < level <= 1):
             nef_dict[level] = 0.0
+            print(f"Invalid FPR level {level}. Must be between 0 and 1.")
             continue
 
-        top_n = int(total * level)
-
-        if top_n < 1:
-            nef_dict[level] = 0.0
-            continue
-
-        # Clamp top_n to avoid out-of-bounds or invalid indexing
+        top_n = max(1, int(total * level))
         top_n = min(top_n, total)
 
-        # Get indices of top_n highest affinity scores
+        # Get indices of top_n highest affinities
         top_indices = np.argpartition(-all_affinities, top_n - 1)[:top_n]
         top_actives = np.sum(all_labels[top_indices])
         expected_actives = num_actives * level
@@ -152,7 +180,6 @@ def compute_ef_nef(all_labels, all_affinities, fpr_levels):
         ef = top_actives / expected_actives if expected_actives > 0 else 0.0
         max_top_actives = min(num_actives, top_n)
         max_ef = max_top_actives / expected_actives if expected_actives > 0 else 0.0
-
         nef = ef / max_ef if max_ef > 0 else 0.0
 
         ef_dict[level] = ef
@@ -160,38 +187,44 @@ def compute_ef_nef(all_labels, all_affinities, fpr_levels):
 
     return ef_dict, nef_dict
 
+
 def bootstrap_roc_auc(labels, scores, n_bootstraps=1000, seed=42):
-    """Bootstrap ROC AUC scores with stratified sampling and return a list of scores."""
+    """
+    Bootstrap ROC AUC with stratified sampling to estimate confidence intervals.
+
+    Parameters:
+        labels (array-like): True binary labels.
+        scores (array-like): Prediction scores.
+        n_bootstraps (int): Number of bootstrap samples.
+        seed (int): Random seed.
+
+    Returns:
+        list of floats: Bootstrapped ROC AUC scores.
+    """
     rng = np.random.RandomState(seed)
     labels = np.array(labels)
     scores = np.array(scores)
 
     bootstrapped_scores = []
 
-    # Separate indices by class
     class_0_indices = np.where(labels == 0)[0]
     class_1_indices = np.where(labels == 1)[0]
-
     n_class_0 = len(class_0_indices)
     n_class_1 = len(class_1_indices)
 
     for _ in range(n_bootstraps):
-        # Sample with replacement within each class
-        sampled_class_0 = rng.choice(class_0_indices, size=n_class_0, replace=True)
-        sampled_class_1 = rng.choice(class_1_indices, size=n_class_1, replace=True)
+        sampled_0 = rng.choice(class_0_indices, n_class_0, replace=True)
+        sampled_1 = rng.choice(class_1_indices, n_class_1, replace=True)
+        sampled_indices = np.concatenate([sampled_0, sampled_1])
 
-        # Combine indices
-        sampled_indices = np.concatenate([sampled_class_0, sampled_class_1])
-
-        # Check if both classes are present in the sample
         if len(np.unique(labels[sampled_indices])) < 2:
-            continue  # skip if sample doesn't have both classes
+            continue
 
-        # Calculate ROC AUC for this bootstrap sample
         score = roc_auc_score(labels[sampled_indices], scores[sampled_indices])
         bootstrapped_scores.append(score)
 
     return bootstrapped_scores
+
 
 def bootstrap_ef_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
     """
@@ -243,6 +276,36 @@ def bootstrap_ef_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap
             continue  # Skip on error (e.g., no actives)
 
     return ef_bootstrap, nef_bootstrap
+
+
+def plot_roc_curve(y_true, y_score, output_path, title=None):
+    """
+    Plot ROC curve and save figure.
+
+    Parameters:
+        y_true (array-like): True binary labels.
+        y_score (array-like): Scores.
+        output_path (str): Path to save the plot.
+        title (str): Optional plot title.
+    """
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    auc_score = roc_auc_score(y_true, y_score)
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(fpr, tpr, label=f'ROC curve (AUC = {auc_score:.3f})', color='blue')
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
+
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(title if title else 'ROC Curve')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.tight_layout()
+
+    plt.savefig(output_path)
+    plt.close()
 
 def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.png',
                               method='mean', output_dir='results_DUD_E',
