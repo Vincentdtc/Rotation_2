@@ -132,85 +132,14 @@ def get_data(code, predictions, method, top_n):
 
     return label, pose, affinity
 
-def compute_ef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05]):
-    """
-    Compute ROC enrichment factors at specified false-positive rates.
-
-    Parameters
-    ----------
-    y_true : array-like of shape (n_samples,)
-        True binary labels (0 or 1).
-    y_score : array-like of shape (n_samples,)
-        Target scores, probabilities, or decision function.
-    fpr_levels : list of floats, optional (default=[0.01, 0.02, 0.05])
-        FPR cutoffs at which to compute enrichment (e.g. 0.01 == 1%).
-
-    Returns
-    -------
-    enrichment : dict
-        Mapping each FPR cutoff to its enrichment factor, defined as
-            EF(x) = TPR(x) / x
-        where TPR(x) is the true-positive rate at FPR = x.
-    """
-    # Compute full ROC curve
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-
-    enrichment = {}
-    for x in fpr_levels:
-        if not (0 < x < 1):
-            raise ValueError(f"FPR level must be between 0 and 1, got {x}")
-        # Interpolate TPR at the desired FPR
-        tpr_at_x = np.interp(x, fpr, tpr)
-        enrichment[x] = tpr_at_x / x
-    return enrichment
-
-def compute_nef2(all_labels, all_affinities, fpr_levels=[0.01, 0.02, 0.05]):
-    
-    ef = compute_ef(all_labels, all_affinities, fpr_levels)
+def compute_ef_nef(all_labels, all_affinities, fpr_levels):
     all_affinities = np.asarray(all_affinities)
     all_labels = np.asarray(all_labels)
 
     total = len(all_labels)
     num_actives = np.sum(all_labels)
 
-    nef_dict = {}
-
-    # Edge case: empty input or no actives
-    if total == 0 or num_actives == 0:
-        return {level: 0.0 for level in fpr_levels}
-
-    for level in fpr_levels:
-        # Ensure level is a float between 0 and 1
-        if not (0 < level <= 1):
-            nef_dict[level] = 0.0
-            continue
-
-        top_n = int(total * level)
-
-        if top_n < 1:
-            nef_dict[level] = 0.0
-            continue
-
-        # Clamp top_n to avoid out-of-bounds or invalid indexing
-        top_n = min(top_n, total)
-
-        # Get indices of top_n highest affinity scores
-        expected_actives = num_actives * level
-
-        max_top_actives = min(num_actives, top_n)
-        max_ef = max_top_actives / expected_actives if expected_actives > 0 else 0.0
-
-        nef = ef[level] / max_ef if max_ef > 0 else 0.0
-        nef_dict[level] = nef
-    return nef_dict
-
-def compute_nef(all_labels, all_affinities, fpr_levels):
-    all_affinities = np.asarray(all_affinities)
-    all_labels = np.asarray(all_labels)
-
-    total = len(all_labels)
-    num_actives = np.sum(all_labels)
-
+    ef_dict = {}
     nef_dict = {}
 
     # Edge case: empty input or no actives
@@ -242,9 +171,11 @@ def compute_nef(all_labels, all_affinities, fpr_levels):
         max_ef = max_top_actives / expected_actives if expected_actives > 0 else 0.0
 
         nef = ef / max_ef if max_ef > 0 else 0.0
+
+        ef_dict[level] = ef
         nef_dict[level] = nef
 
-    return nef_dict
+    return ef_dict, nef_dict
 
 def bootstrap_roc_auc(labels, scores, n_bootstraps=1000, seed=42):
     """Bootstrap ROC AUC scores with stratified sampling and return a list of scores."""
@@ -279,7 +210,21 @@ def bootstrap_roc_auc(labels, scores, n_bootstraps=1000, seed=42):
 
     return bootstrapped_scores
 
-def bootstrap_ef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
+def bootstrap_ef_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
+    """
+    Perform bootstrapping to compute both EF and NEF at given FPR levels.
+
+    Parameters:
+    - y_true: array-like of ground truth labels (0 or 1)
+    - y_score: array-like of predicted scores
+    - fpr_levels: list of FPR thresholds at which to evaluate EF and NEF
+    - n_bootstrap: number of bootstrap samples
+    - seed: random seed for reproducibility
+
+    Returns:
+    - ef_bootstrap: dict mapping FPR level to list of EF values
+    - nef_bootstrap: dict mapping FPR level to list of NEF values
+    """
     rng = np.random.default_rng(seed)
     y_true = np.array(y_true)
     y_score = np.array(y_score)
@@ -292,114 +237,34 @@ def bootstrap_ef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=100
     n_class_1 = len(class_1_indices)
 
     ef_bootstrap = {fpr: [] for fpr in fpr_levels}
+    nef_bootstrap = {fpr: [] for fpr in fpr_levels}
 
     for _ in range(n_bootstrap):
         # Stratified sampling with replacement within each class
         sampled_class_0 = rng.choice(class_0_indices, size=n_class_0, replace=True)
         sampled_class_1 = rng.choice(class_1_indices, size=n_class_1, replace=True)
 
-        # Combine indices
         sampled_indices = np.concatenate([sampled_class_0, sampled_class_1])
-
         y_resample = y_true[sampled_indices]
         score_resample = y_score[sampled_indices]
 
-        # Ensure both classes present
         if len(np.unique(y_resample)) < 2:
-            continue
+            continue  # Skip if both classes not present
 
         try:
-            ef = compute_ef(y_resample, score_resample, fpr_levels)
+            ef, nef = compute_ef_nef(y_resample, score_resample, fpr_levels)
             for fpr in fpr_levels:
                 ef_bootstrap[fpr].append(ef[fpr])
-        except ValueError:
-            # Skip if compute_ef fails (e.g. due to missing class)
-            continue
-
-    return ef_bootstrap
-
-def bootstrap_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
-    rng = np.random.default_rng(seed)
-    y_true = np.array(y_true)
-    y_score = np.array(y_score)
-
-    # Separate indices by class
-    class_0_indices = np.where(y_true == 0)[0]
-    class_1_indices = np.where(y_true == 1)[0]
-
-    n_class_0 = len(class_0_indices)
-    n_class_1 = len(class_1_indices)
-
-    nef_bootstrap = {fpr: [] for fpr in fpr_levels}
-
-    for _ in range(n_bootstrap):
-        # Stratified sampling with replacement within each class
-        sampled_class_0 = rng.choice(class_0_indices, size=n_class_0, replace=True)
-        sampled_class_1 = rng.choice(class_1_indices, size=n_class_1, replace=True)
-
-        # Combine indices
-        sampled_indices = np.concatenate([sampled_class_0, sampled_class_1])
-
-        y_resample = y_true[sampled_indices]
-        score_resample = y_score[sampled_indices]
-
-        # Ensure both classes present in resample
-        if len(np.unique(y_resample)) < 2:
-            continue
-
-        try:
-            nef = compute_nef(y_resample, score_resample, fpr_levels)
-            for fpr in fpr_levels:
                 nef_bootstrap[fpr].append(nef[fpr])
         except ValueError:
-            # Skip iteration if compute_nef fails (e.g. due to missing class)
-            continue
+            continue  # Skip on error (e.g., no actives)
 
-    return nef_bootstrap
-
-def bootstrap_nef2(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
-    rng = np.random.default_rng(seed)
-    y_true = np.array(y_true)
-    y_score = np.array(y_score)
-
-    # Separate indices by class
-    class_0_indices = np.where(y_true == 0)[0]
-    class_1_indices = np.where(y_true == 1)[0]
-
-    n_class_0 = len(class_0_indices)
-    n_class_1 = len(class_1_indices)
-
-    nef_bootstrap = {fpr: [] for fpr in fpr_levels}
-
-    for _ in range(n_bootstrap):
-        # Stratified sampling with replacement within each class
-        sampled_class_0 = rng.choice(class_0_indices, size=n_class_0, replace=True)
-        sampled_class_1 = rng.choice(class_1_indices, size=n_class_1, replace=True)
-
-        # Combine indices
-        sampled_indices = np.concatenate([sampled_class_0, sampled_class_1])
-
-        y_resample = y_true[sampled_indices]
-        score_resample = y_score[sampled_indices]
-
-        # Ensure both classes present in resample
-        if len(np.unique(y_resample)) < 2:
-            continue
-
-        try:
-            nef = compute_nef2(y_resample, score_resample, fpr_levels)
-            for fpr in fpr_levels:
-                nef_bootstrap[fpr].append(nef[fpr])
-        except ValueError:
-            # Skip iteration if compute_nef fails (e.g. due to missing class)
-            continue
-
-    return nef_bootstrap
+    return ef_bootstrap, nef_bootstrap
 
 def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.png',
                               method='mean', output_dir='results_DUD_E',
                               mode='Affinity', auc_mode='aff',
-                              reference_file='reference_metrics_def2018.xlsx'):
+                              reference_file='reference_metrics.xlsx'):
     """
     Plot NEF, EF, and AUC metrics for a given mode ('Affinity' or 'Pose'),
     and overlay reference values from an Excel file.
@@ -447,11 +312,11 @@ def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.pn
     all_targets = list(target_metrics.keys())
 
     # --- NEF Keys ---
-    nef_key_mean = f'NEF ({mode}) 1.0% {method}'
+    nef_key_mean = f'NEF ({mode}) 1.0%'
     nef_key_ci = f'NEF ({mode}) 1.0% CI'
 
     # --- EF Keys ---
-    ef_key_mean = f'EF ({mode}) 1.0% {method}'
+    ef_key_mean = f'EF ({mode}) 1.0%'
     ef_key_ci = f'EF ({mode}) 1.0% CI'
 
     # --- AUC Keys ---
@@ -476,7 +341,7 @@ def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.pn
 
     # --- Plot ---
     fig, axs = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-    color = 'saddlebrown' if mode.lower() == 'affinity' else 'darksalmon'
+    color = 'teal' if mode.lower() == 'affinity' else 'purple'
     ref_color = 'gray'
 
     # NEF plot
@@ -641,9 +506,9 @@ def plot_ef_nef_grouped_bar_with_ci(target_metrics, output_dir='results_DUD_E', 
     nef_err = {}
 
     for level in levels:
-        ef_key = f'EF ({mode}) {level:.1f}% mean'
+        ef_key = f'EF ({mode}) {level:.1f}%'
         ef_ci_key = f'EF ({mode}) {level:.1f}% CI'
-        nef_key = f'NEF ({mode}) {level:.1f}% mean'
+        nef_key = f'NEF ({mode}) {level:.1f}%'
         nef_ci_key = f'NEF ({mode}) {level:.1f}% CI'
 
         ef_data[level] = [target_metrics[t].get(ef_key, 0.0) for t in targets]

@@ -14,7 +14,7 @@ from functions_def2018 import *
 from default2018_model import *
 
 # === CONFIG === #
-DATA_ROOT, DATA_ROOT2, OUTPUT_ROOT = 'DUDE_data', 'dude_vs', 'ligands_sdf'
+DATA_ROOT, DATA_ROOT2, OUTPUT_ROOT, OUTPUT_ROOT2 = 'DUDE_data', 'dude_vs', 'ligands_sdf', 'results_DUD_E'
 WEIGHTS_PATH, TYPES_FILENAME = './weights/crossdock_default2018.pt', 'molgrid_input.types'
 BATCH_SIZE, NUM_CONFORMERS, TOP_N, METHOD = 1, 9, 3, 'max_aff'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,7 +179,7 @@ def process_target(target_folder):
 
 def compute_metrics(target, predictions):
     """Compute ROC AUC, Pearson correlation, and store max-score data."""
-    all_affinities, all_labels, all_poses = [], [], []
+    all_affinities, all_labels, all_poses= [], [], []
 
     # Helper function to extract data from predictions
     for code in sorted(predictions.keys()):
@@ -194,7 +194,6 @@ def compute_metrics(target, predictions):
     if has_both_classes:
         roc_auc_pose = roc_auc_score(all_labels, all_poses)
         roc_auc_aff = roc_auc_score(all_labels, all_affinities)
-        pearson_corr = pearsonr(all_poses, all_affinities)[0]
 
         # Bootstrap AUCs
         boot_aff = bootstrap_roc_auc(all_labels, all_affinities)
@@ -210,7 +209,7 @@ def compute_metrics(target, predictions):
         ci_aff = (np.percentile(boot_aff, 2.5), np.percentile(boot_aff, 97.5))
         ci_pose = (np.percentile(boot_pose, 2.5), np.percentile(boot_pose, 97.5))
     else:
-        roc_auc_pose = roc_auc_aff = pearson_corr = None
+        roc_auc_pose = roc_auc_aff = None
     
     num_ligands = sum(len(v) for v in predictions.values())
     num_unique_ligands = len(set(all_affinities))
@@ -228,7 +227,6 @@ def compute_metrics(target, predictions):
         'num_decoys': num_unique_decoys,
         'roc_auc(pose)': roc_auc_pose,
         'roc_auc(affinity)': roc_auc_aff,
-        'pearson_correlation': round(pearson_corr,2),
         'boot_aff_mean': mean_aff,
         'boot_aff_median': median_aff,
         'boot_aff_ci': ci_aff,
@@ -238,20 +236,15 @@ def compute_metrics(target, predictions):
     }
 
     # Bootstrap enrichment factors
-    boot_efs_pose = bootstrap_ef(all_labels, all_poses, fpr_levels=[0.01, 0.05, 0.1])
-    boot_efs_aff = bootstrap_ef(all_labels, all_affinities, fpr_levels=[0.01, 0.05, 0.1])
-
-    boot_nefs_pose = bootstrap_nef(all_labels, all_poses, fpr_levels=[0.01, 0.05, 0.1])
-    boot_nefs_aff = bootstrap_nef(all_labels, all_affinities, fpr_levels=[0.01, 0.05, 0.1])
+    boot_efs_pose, boot_nefs_pose = bootstrap_ef_nef(all_labels, all_poses, fpr_levels=[0.01, 0.05, 0.1])
+    boot_efs_aff, boot_nefs_aff = bootstrap_ef_nef(all_labels, all_affinities, fpr_levels=[0.01, 0.05, 0.1])
 
     def summarize_bootstrapped_metric(boot_results, prefix, target_metrics_entry):
         for fpr, ef_list in boot_results.items():
             ef_mean = np.mean(ef_list)
-            ef_median = np.median(ef_list)
             ef_ci = (np.percentile(ef_list, 2.5), np.percentile(ef_list, 97.5))
 
-            target_metrics_entry[f'{prefix} {fpr*100:.1f}% mean'] = ef_mean
-            target_metrics_entry[f'{prefix} {fpr*100:.1f}% median'] = ef_median
+            target_metrics_entry[f'{prefix} {fpr*100:.1f}%'] = ef_mean
             target_metrics_entry[f'{prefix} {fpr*100:.1f}% CI'] = ef_ci
 
     summarize_bootstrapped_metric(boot_efs_pose, "EF (Pose)", target_metrics[target])
@@ -273,42 +266,45 @@ def summarize_metric(metric_key):
 
 # Collect and print summary for each required metric
 summary_keys = [
-    'roc_auc(pose)', 'roc_auc(affinity)',
-    'EF (Pose) 1.0% mean', 
-    'EF (Affinity) 1.0% mean',
-    'EF (Pose) 1.0% median', 
-    'EF (Affinity) 1.0% median',
-    'NEF (Pose) 1.0% mean', 
-    'NEF (Affinity) 1.0% mean',
-    'NEF (Pose) 1.0% median', 
-    'NEF (Affinity) 1.0% median',
+    'roc_auc(pose)', 
+    'roc_auc(affinity)',
+    'EF (Pose) 1.0%', 
+    'EF (Affinity) 1.0%',
+    'NEF (Pose) 1.0%', 
+    'NEF (Affinity) 1.0%',
 ]
+
+# Ensure the directory exists
+os.makedirs(OUTPUT_ROOT2, exist_ok=True)
+
+# === SAVE SUMMARY METRICS TO TXT FILE === #
+summary_txt_path = os.path.join(OUTPUT_ROOT2, "aggregate_metrics_summary.txt")
+with open(summary_txt_path, "w") as f:
+    f.write("==== AGGREGATE METRICS OVER ALL TARGETS ====\n")
+    for key in summary_keys:
+        mean_val, median_val = summarize_metric(key)
+        line = f"{key} -> Mean: {mean_val:.4f}, Median: {median_val:.4f}\n"
+        f.write(line)
 
 print("\n==== AGGREGATE METRICS OVER ALL TARGETS ====")
 for key in summary_keys:
     mean_val, median_val = summarize_metric(key)
     print(f"{key} -> Mean: {mean_val:.4f}, Median: {median_val:.4f}")
 
-# Ensure the directory exists
-os.makedirs("results_DUD_E", exist_ok=True)
-
-# === SAVE ALL TARGET METRICS TO CSV === #
-# Convert all values in the dict to strings so they can be safely written to CSV
+# Save all metrics to CSV
+excluded_keys = {'labels', 'affinity_scores', 'pose_scores'}
 stringified_metrics = {}
-
 for target, metrics in target_metrics.items():
-    stringified_metrics[target] = {k: str(v) for k, v in metrics.items()}
+    filtered = {k: str(v) for k, v in metrics.items() if k not in excluded_keys}
+    stringified_metrics[target] = filtered
 
-# Create DataFrame
 df = pd.DataFrame.from_dict(stringified_metrics, orient='index')
-
-# Save to CSV inside the folder results_DUD_E
-df.to_csv("results_DUD_E/full_target_metrics.csv")
+df.to_csv(os.path.join(OUTPUT_ROOT2, "full_target_metrics.csv"))
 
 # === VISUALIZATION FUNCTIONS === #
 print("\n==== SAVING RESULTS ====")
 plot_bootstrapped_metrics(target_metrics, save_path='metrics_affinity.png', mode='Affinity', auc_mode='aff', reference_file='reference_metrics_def2018.xlsx')
 plot_bootstrapped_metrics(target_metrics, save_path='metrics_pose.png', mode='Pose', auc_mode='pose', reference_file='reference_metrics_def2018.xlsx')
+plot_roc_and_distributions(target_metrics)
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Affinity')
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Pose')
-plot_roc_and_distributions(target_metrics)
