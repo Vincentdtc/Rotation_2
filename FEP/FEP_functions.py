@@ -1,4 +1,3 @@
-# Imports
 import os
 from rdkit import Chem
 import math
