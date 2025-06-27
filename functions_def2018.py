@@ -1,16 +1,17 @@
 # Imports
-import shutil
 import os
 import re
-import numpy as np
-from rdkit import Chem, RDLogger
 import gzip
-from collections import defaultdict
-from matplotlib import pyplot as plt
-import seaborn as sns
+import shutil
+import numpy as np
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from rdkit import Chem, RDLogger
+from collections import defaultdict
 from sklearn.metrics import roc_auc_score, roc_curve
-# Suppress RDKit warnings
+
+# Suppress RDKit warnings to keep output clean
 RDLogger.DisableLog('rdApp.*')
 
 def ensure_output_dir(base_dir='results_DUD_E'):
@@ -260,6 +261,35 @@ def bootstrap_ef_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap
             continue  # Skip on error (e.g., no actives)
 
     return ef_bootstrap, nef_bootstrap
+
+def plot_roc_curve(y_true, y_score, output_path, title=None):
+    """
+    Plot ROC curve and save figure.
+
+    Parameters:
+        y_true (array-like): True binary labels.
+        y_score (array-like): Scores.
+        output_path (str): Path to save the plot.
+        title (str): Optional plot title.
+    """
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    auc_score = roc_auc_score(y_true, y_score)
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(fpr, tpr, label=f'ROC curve (AUC = {auc_score:.3f})', color='blue')
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
+
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(title if title else 'ROC Curve')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.tight_layout()
+
+    plt.savefig(output_path)
+    plt.close()
 
 def plot_bootstrapped_metrics(target_metrics, save_path='bootstrapped_metrics.png',
                               method='mean', output_dir='results_DUD_E',
@@ -560,3 +590,25 @@ def plot_ef_nef_grouped_bar_with_ci(target_metrics, output_dir='results_DUD_E', 
 
     print(f"Saved grouped EF plot to: {ef_path}")
     print(f"Saved grouped NEF plot to: {nef_path}")
+
+def plot_all_aff(all_affinities, all_labels, output_dir, filename):
+    # Separate actives and decoys based on labels
+    actives = [a for a, l in zip(all_affinities, all_labels) if l == 1]
+    decoys = [a for a, l in zip(all_affinities, all_labels) if l == 0]
+
+    plt.figure(figsize=(8, 6))
+    sns.histplot(actives, kde=True, color='green', label='Actives',
+                 stat='density', bins=20)
+    sns.histplot(decoys, kde=True, color='red', label='Decoys',
+                 stat='density', bins=20)
+
+    plt.title('Overall Affinity Distribution (All Targets)')
+    plt.xlabel('Predicted Affinity (kcal/mol)')
+    plt.ylabel('Density')
+    plt.legend()
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, filename)
+    plt.savefig(save_path, dpi=300)
+    print(f"[INFO] Saved overall affinity distribution plot to {save_path}")

@@ -4,8 +4,9 @@ import torch
 import molgrid
 import numpy as np
 from glob import glob
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
 import pandas as pd
+import json
 
 from functions import *
 from gnina_dense_model import Dense
@@ -18,7 +19,7 @@ OUTPUT_ROOT2 = 'results_DUD_E'
 WEIGHTS_PATH = './weights/dense.pt'
 TYPES_FILENAME = 'molgrid_input.types'
 BATCH_SIZE = 1
-NUM_CONFORMERS = math.inf
+NUM_CONFORMERS = 9
 TOP_N = 3
 METHOD = 'max_aff'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -32,6 +33,12 @@ model = None
 target_metrics = {}     # Will store per-target performance metrics
 per_target_data = {}    # Will collect per-target predictions
 
+# global lists for aggregating all predictions across targets
+all_pose_scores = []
+all_affinity_scores = []
+all_labels = []
+
+# === MODEL LOADING === #
 def load_model(input_dims):
     """
     Initialize and load Dense model with pretrained weights.
@@ -55,7 +62,7 @@ def prepare_gridmaker_and_tensor(provider):
         provider (molgrid.ExampleProvider): provider for ligand examples.
 
     Returns:
-        grid_maker, dims, tensor: For populating and running model inference.
+        gm, dims, tensor: For populating and running model inference.
     """
     gm = molgrid.GridMaker(resolution=0.5, dimension=23.5)
     dims = gm.grid_dimensions(provider.num_types())
@@ -167,6 +174,11 @@ def compute_metrics(target, predictions):
         l, p, a = get_data(code, predictions, METHOD, TOP_N)
         labs.append(l); poses.append(p); affs.append(a)
 
+    # === Extend global lists for average ROC computation === #
+    all_pose_scores.extend(poses)
+    all_affinity_scores.extend(affs)
+    all_labels.extend(labs)
+
     # Check if both classes exist
     if len(set(labs)) > 1:
         auc_pose = roc_auc_score(labs, poses)
@@ -235,7 +247,11 @@ print("\n==== AGGREGATE METRICS ====")
 for key in [
     'roc_auc(pose)', 'roc_auc(affinity)',
     'EF (Pose) 1.0%', 'EF (Affinity) 1.0%',
-    'NEF (Pose) 1.0%', 'NEF (Affinity) 1.0%'
+    'EF (Pose) 5.0%', 'EF (Affinity) 5.0%',
+    'EF (Pose) 10.0%', 'EF (Affinity) 10.0%',
+    'NEF (Pose) 1.0%', 'NEF (Affinity) 1.0%',
+    'NEF (Pose) 5.0%', 'NEF (Affinity) 5.0%',
+    'NEF (Pose) 10.0%', 'NEF (Affinity) 10.0%'
 ]:
     mn, md = summarize_metric(key)
     print(f"{key} -> Mean: {mn:.4f}, Median: {md:.4f}")
@@ -248,6 +264,47 @@ rows = {t: {k: str(v) for k, v in m.items() if k not in ('labels','pose_scores',
 pd.DataFrame.from_dict(rows, orient='index') \
   .to_csv(os.path.join(OUTPUT_ROOT2, "full_target_metrics.csv"))
 
+# === Save averaged ROC and PRC curves === #
+def save_average_roc_curve(labels, scores, name, save_dir):
+    fpr, tpr, _ = roc_curve(labels, scores)
+    roc_data = {
+        'fpr': fpr.tolist(),
+        'tpr': tpr.tolist()
+    }
+    with open(os.path.join(save_dir, f"avg_roc_{name}.json"), 'w') as f:
+        json.dump(roc_data, f)
+    print(f"[INFO] Saved avg_roc_{name}.json")
+
+def save_average_prc_curve(labels, scores, name, save_dir):
+    precision, recall, _ = precision_recall_curve(labels, scores)
+    prc_data = {
+        'precision': precision.tolist(),
+        'recall': recall.tolist()
+    }
+    with open(os.path.join(save_dir, f"avg_prc_{name}.json"), 'w') as f:
+        json.dump(prc_data, f)
+    print(f"[INFO] Saved avg_prc_{name}.json")
+
+save_average_roc_curve(all_labels, all_affinity_scores, 'affinity', OUTPUT_ROOT2)
+save_average_roc_curve(all_labels, all_pose_scores, 'pose', OUTPUT_ROOT2)
+save_average_prc_curve(all_labels, all_affinity_scores, 'affinity', OUTPUT_ROOT2)
+save_average_prc_curve(all_labels, all_pose_scores, 'pose', OUTPUT_ROOT2)
+
+import matplotlib.pyplot as plt
+
+def plot_overall_affinity_distribution(affinity_scores, save_path=None):
+    plt.figure(figsize=(8, 6))
+    plt.hist(affinity_scores, bins=50, alpha=0.7, color='blue', edgecolor='black')
+    plt.title('Overall Affinity Distribution Across All Targets')
+    plt.xlabel('Predicted Affinity Score')
+    plt.ylabel('Count')
+    plt.grid(False)
+    if save_path:
+        plt.savefig(save_path, dpi=300)
+        print(f"[INFO] Saved overall affinity distribution plot to {save_path}")
+    plt.show()
+
+
 # === PLOTS === #
 print("\n==== GENERATING FIGURES ====")
 plot_bootstrapped_metrics(target_metrics, save_path='metrics_affinity.png', mode='Affinity',
@@ -257,3 +314,4 @@ plot_bootstrapped_metrics(target_metrics, save_path='metrics_pose.png', mode='Po
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Affinity')
 plot_ef_nef_grouped_bar_with_ci(target_metrics, mode='Pose')
 plot_roc_and_distributions(target_metrics)
+plot_all_aff(all_affinity_scores, all_labels, OUTPUT_ROOT2, 'overall_affinity_distribution.png')

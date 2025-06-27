@@ -14,7 +14,6 @@ from sklearn.metrics import roc_auc_score, roc_curve
 # Suppress RDKit warnings to keep output clean
 RDLogger.DisableLog('rdApp.*')
 
-
 def ensure_output_dir(base_dir='results_DUD_E'):
     """
     Ensure that the output directory exists; create it if it doesn't.
@@ -27,7 +26,6 @@ def ensure_output_dir(base_dir='results_DUD_E'):
     """
     os.makedirs(base_dir, exist_ok=True)
     return base_dir
-
 
 def extract_sdf_gz_files(directory, ending='.sdf.gz'):
     """
@@ -48,7 +46,6 @@ def extract_sdf_gz_files(directory, ending='.sdf.gz'):
 
                 with gzip.open(gz_path, 'rb') as f_in, open(extracted_path, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
-
 
 def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path, types_file_handle, batch_num=0):
     """
@@ -108,7 +105,6 @@ def process_molecules(sdf_path, number, label, prefix, output_dir, receptor_path
 
         chembl_counts[chembl_id] += 1
 
-
 def get_data(code, predictions, method, top_n):
     """
     Extract label, pose, and affinity for a given code from predictions using specified method.
@@ -138,7 +134,6 @@ def get_data(code, predictions, method, top_n):
         raise ValueError("Method must be one of ['max_aff', 'max_pose', 'mean'].")
 
     return labels[idx], poses[idx], affinities[idx]
-
 
 def compute_ef_nef(all_labels, all_affinities, fpr_levels):
     """
@@ -187,7 +182,6 @@ def compute_ef_nef(all_labels, all_affinities, fpr_levels):
 
     return ef_dict, nef_dict
 
-
 def bootstrap_roc_auc(labels, scores, n_bootstraps=1000, seed=42):
     """
     Bootstrap ROC AUC with stratified sampling to estimate confidence intervals.
@@ -224,7 +218,6 @@ def bootstrap_roc_auc(labels, scores, n_bootstraps=1000, seed=42):
         bootstrapped_scores.append(score)
 
     return bootstrapped_scores
-
 
 def bootstrap_ef_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap=1000, seed=42):
     """
@@ -276,7 +269,6 @@ def bootstrap_ef_nef(y_true, y_score, fpr_levels=[0.01, 0.02, 0.05], n_bootstrap
             continue  # Skip on error (e.g., no actives)
 
     return ef_bootstrap, nef_bootstrap
-
 
 def plot_roc_curve(y_true, y_score, output_path, title=None):
     """
@@ -504,7 +496,7 @@ def plot_roc_and_distributions(target_metrics,
                      stat="density", ax=ax_dist, bins=20)
 
         ax_dist.set_title(target)
-        ax_dist.set_xlabel('Predicted Affinity')
+        ax_dist.set_xlabel('Predicted Affinity (kcal/mol)')
         ax_dist.set_ylabel('Density')
         ax_dist.legend()
         ax_dist.grid(True)
@@ -606,3 +598,25 @@ def plot_ef_nef_grouped_bar_with_ci(target_metrics, output_dir='results_DUD_E', 
 
     print(f"Saved grouped EF plot to: {ef_path}")
     print(f"Saved grouped NEF plot to: {nef_path}")
+
+def plot_all_aff(all_affinities, all_labels, output_dir, filename):
+    # Separate actives and decoys based on labels
+    actives = [a for a, l in zip(all_affinities, all_labels) if l == 1]
+    decoys = [a for a, l in zip(all_affinities, all_labels) if l == 0]
+
+    plt.figure(figsize=(8, 6))
+    sns.histplot(actives, kde=True, color='green', label='Actives',
+                 stat='density', bins=20)
+    sns.histplot(decoys, kde=True, color='red', label='Decoys',
+                 stat='density', bins=20)
+
+    plt.title('Overall Affinity Distribution (All Targets)')
+    plt.xlabel('Predicted Affinity (kcal/mol)')
+    plt.ylabel('Density')
+    plt.legend()
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, filename)
+    plt.savefig(save_path, dpi=300)
+    print(f"[INFO] Saved overall affinity distribution plot to {save_path}")
