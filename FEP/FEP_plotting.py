@@ -184,9 +184,9 @@ def plot_overall_correlation(FEP_data, target_metrics, save_path=RESULTS_DIR):
                 'k--', label='Ideal: y = x')
 
         ax.set_title(model, fontsize=24)
-        ax.set_xlabel('Experimental Affinity', fontsize=20)
+        ax.set_xlabel('Experimental Affinity (kcal/mol)', fontsize=20)
         if i == 0:
-            ax.set_ylabel('Predicted Affinity', fontsize=20)
+            ax.set_ylabel('Predicted Affinity (kcal/mol)', fontsize=20)
 
         ax.tick_params(axis='both', which='major', labelsize=16)
         ax.legend(fontsize=14)
